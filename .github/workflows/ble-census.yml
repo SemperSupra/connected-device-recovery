@@ -1,0 +1,67 @@
+name: BLE census harness
+
+on:
+  push:
+    branches:
+      - harness/ble-census
+    paths:
+      - harness/ble/**
+      - tests/test_ble_census.py
+      - schemas/trace.schema.json
+      - .github/workflows/ble-census.yml
+  pull_request:
+    paths:
+      - harness/ble/**
+      - tests/test_ble_census.py
+      - schemas/trace.schema.json
+      - .github/workflows/ble-census.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check "bleak==3.0.2" "jsonschema>=4,<5"
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Validate synthetic trace against public schema
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import jsonschema
+          from types import SimpleNamespace
+          from harness.ble.census import advertisement_event, characteristic_event, service_event
+
+          schema=json.load(open("schemas/trace.schema.json"))
+          device=SimpleNamespace(name="fallback",address="test-platform-id")
+          adv=SimpleNamespace(
+              local_name="J-Test",rssi=-50,tx_power=None,
+              service_uuids=["0000ffa0-0000-1000-8000-00805f9b34fb"],
+              manufacturer_data={},service_data={}
+          )
+          service=SimpleNamespace(
+              uuid="0000ffa0-0000-1000-8000-00805f9b34fb",
+              handle=1,description="JOYHUB service"
+          )
+          characteristic=SimpleNamespace(
+              uuid="0000ffa1-0000-1000-8000-00805f9b34fb",
+              handle=2,description="test characteristic",
+              properties=["write"]
+          )
+          events=[
+              advertisement_event(device,adv,specimen="fixture",experiment="EXP-FIXTURE"),
+              service_event(service,specimen="fixture",experiment="EXP-FIXTURE",identity="J-Test"),
+              characteristic_event(service,characteristic,specimen="fixture",experiment="EXP-FIXTURE",identity="J-Test"),
+          ]
+          for event in events:
+              jsonschema.validate(event,schema)
+          print(f"validated {len(events)} normalized trace events")
+          PY
