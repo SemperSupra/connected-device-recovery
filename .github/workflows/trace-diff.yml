@@ -1,0 +1,44 @@
+name: Trace differential harness
+
+on:
+  push:
+    branches:
+      - harness/trace-diff
+    paths:
+      - harness/diff/**
+      - tests/test_trace_diff.py
+      - schemas/trace.schema.json
+      - .github/workflows/trace-diff.yml
+  pull_request:
+    paths:
+      - harness/diff/**
+      - tests/test_trace_diff.py
+      - schemas/trace.schema.json
+      - .github/workflows/trace-diff.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install validation dependency
+        run: python -m pip install --disable-pip-version-check "jsonschema>=4,<5"
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Exercise CLI and schema validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/a.jsonl <<'EOF'
+          {"ts":"2026-09-21T00:00:00Z","source":"official-app","kind":"ble-write","specimen":"s","experiment":"e","device_identity":"J-Test","service":"0000FFA0","characteristic":"0000FFA1","value_hex":"A00301000000AA","semantic":null,"provenance":{"run":"a"}}
+          EOF
+          cat > /tmp/b.jsonl <<'EOF'
+          {"ts":"2026-09-21T00:00:01Z","source":"official-app","kind":"ble-write","specimen":"s","experiment":"e","device_identity":"J-Test","service":"0000ffa0","characteristic":"0000ffa1","value_hex":"a00301000000aa","semantic":null,"provenance":{"run":"b"}}
+          EOF
+          python harness/diff/compare.py /tmp/a.jsonl /tmp/b.jsonl --kinds ble-write --require-equal
