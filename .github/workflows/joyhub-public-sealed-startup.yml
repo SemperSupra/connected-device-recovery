@@ -1,0 +1,282 @@
+name: JOYHUB public sealed startup runtime
+run-name: sidecar:${{ inputs.workset_id }}:${{ inputs.delegation_id }}:${{ inputs.assignment_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      workset_id:
+        description: "Opaque Agent Dispatch workset id"
+        required: true
+        type: string
+      delegation_id:
+        description: "Opaque Agent Dispatch delegation id"
+        required: true
+        type: string
+      assignment_id:
+        description: "Opaque Agent Dispatch assignment id"
+        required: true
+        type: string
+      age_recipient:
+        description: "Public age X25519 recipient for sealed evidence"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PACKAGE: mini1.net.joyhub
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Validate opaque dispatch envelope
+        shell: bash
+        env:
+          WORKSET_ID: ${{ inputs.workset_id }}
+          DELEGATION_ID: ${{ inputs.delegation_id }}
+          ASSIGNMENT_ID: ${{ inputs.assignment_id }}
+          AGE_RECIPIENT: ${{ inputs.age_recipient }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os,re
+          opaque=re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,95}$")
+          for key in ("WORKSET_ID","DELEGATION_ID","ASSIGNMENT_ID"):
+              value=os.environ[key]
+              if not opaque.fullmatch(value):
+                  raise SystemExit(f"invalid opaque identifier: {key}")
+          if not re.fullmatch(r"age1[0-9a-z]{58}", os.environ["AGE_RECIPIENT"]):
+              raise SystemExit("invalid age X25519 recipient")
+          PY
+
+      - name: Install age
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq age >/dev/null
+
+      - name: Acquire public JOYHUB distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/download work/extracted private-result .sealed
+          docker run --rm             -v "$PWD/work/download:/output"             ghcr.io/efforg/apkeep:stable             -a "$PACKAGE" -d apk-pure             -o 'arch=arm64-v8a;armeabi-v7a;armeabi;x86;x86_64'             /output > private-result/acquire.log 2>&1
+
+          mapfile -t archives < <(find work/download -maxdepth 1 -type f \( -iname '*.apk' -o -iname '*.xapk' -o -iname '*.apkm' \) | sort)
+          if [ "${#archives[@]}" -ne 1 ]; then
+            printf '{"phase":"acquisition","status":"blocked","reason":"archive-count"}\n' > private-result/result.json
+            exit 31
+          fi
+          archive="${archives[0]}"
+          printf '%s\n' "$archive" > work/archive.path
+
+          python3 - "$archive" work/extracted <<'PY'
+          import pathlib,sys,zipfile
+          src=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2])
+          if src.suffix.lower()==".apk":
+              (out/src.name).write_bytes(src.read_bytes())
+          elif zipfile.is_zipfile(src):
+              with zipfile.ZipFile(src) as z:
+                  z.extractall(out)
+          else:
+              raise SystemExit(32)
+          PY
+
+          sha256sum "$archive" > private-result/archive.sha256
+
+          python3 - "$PACKAGE" work/extracted > work/selection.json <<'PY'
+          import json,pathlib,sys
+          package=sys.argv[1]
+          root=pathlib.Path(sys.argv[2])
+          base=None
+          density=None
+          manifest=root/"manifest.json"
+          if manifest.exists():
+              try:
+                  data=json.loads(manifest.read_text())
+              except Exception:
+                  data={}
+              for item in data.get("split_apks",[]):
+                  p=root/item.get("file","")
+                  if not p.exists():
+                      continue
+                  if item.get("id")=="base":
+                      base=p
+                  ident=str(item.get("id",""))
+                  if "dpi" in ident.lower() and density is None:
+                      density=p
+          if base is None:
+              candidate=root/f"{package}.apk"
+              if candidate.exists():
+                  base=candidate
+          if base is None:
+              apks=sorted(root.rglob("*.apk"))
+              for p in apks:
+                  if p.name==f"{package}.apk" or p.name.lower() in {"base.apk","base-master.apk"}:
+                      base=p; break
+          if base is None:
+              raise SystemExit(33)
+          print(json.dumps({"base":str(base),"density":str(density) if density else None}))
+          PY
+
+          python3 - <<'PY'
+          import json,hashlib,pathlib
+          s=json.loads(pathlib.Path("work/selection.json").read_text())
+          rows={}
+          for key in ("base","density"):
+              if not s.get(key): continue
+              p=pathlib.Path(s[key]); h=hashlib.sha256(p.read_bytes()).hexdigest()
+              rows[key]={"name":p.name,"sha256":h,"size":p.stat().st_size}
+          pathlib.Path("private-result/selected-apks.json").write_text(json.dumps(rows,indent=2,sort_keys=True))
+          PY
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -e /dev/kvm
+
+      - name: Boot emulator and capture startup evidence
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          cores: 2
+          ram-size: 4096M
+          emulator-options: -no-snapshot-load -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none -no-metrics
+          disable-animations: false
+          script: |
+            set -u
+            adb wait-for-device
+            adb shell getprop > private-result/getprop.txt 2>&1 || true
+
+            base="$(python3 -c 'import json;print(json.load(open("work/selection.json"))["base"])')"
+            density="$(python3 -c 'import json;print(json.load(open("work/selection.json")).get("density") or "")')"
+
+            set +e
+            if [ -n "$density" ]; then
+              adb install-multiple -r "$base" "$density" > private-result/install.txt 2>&1
+            else
+              adb install -r "$base" > private-result/install.txt 2>&1
+            fi
+            install_rc=$?
+            set -e
+            echo "$install_rc" > private-result/install-exit-code.txt
+
+            if [ "$install_rc" -ne 0 ]; then
+              python3 - <<'PY'
+              import json,pathlib
+              t=pathlib.Path("private-result/install.txt").read_text(errors="replace")
+              reason="INSTALL_BLOCK"
+              if any(x.lower() in t.lower() for x in ("abi","native","split","install_failed")):
+                  reason="INSTALL_OR_ABI_BLOCK"
+              pathlib.Path("private-result/result.json").write_text(json.dumps({
+                  "schema":"cdr-public-startup-runtime/v1",
+                  "classification":reason,
+                  "install_rc":int(pathlib.Path("private-result/install-exit-code.txt").read_text().strip())
+              },sort_keys=True))
+              PY
+              exit 0
+            fi
+
+            adb shell dumpsys package "$PACKAGE" > private-result/package.txt 2>&1 || true
+            adb shell pm path "$PACKAGE" > private-result/package-paths.txt 2>&1 || true
+            adb shell logcat -c || true
+
+            set +e
+            adb shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 > private-result/launch.txt 2>&1
+            launch_rc=$?
+            set -e
+            echo "$launch_rc" > private-result/launch-exit-code.txt
+
+            sleep 12
+            adb shell uiautomator dump /sdcard/joyhub-window.xml > private-result/uiautomator.txt 2>&1 || true
+            adb pull /sdcard/joyhub-window.xml private-result/window.xml > /dev/null 2>&1 || true
+            adb exec-out screencap -p > private-result/startup.png 2>/dev/null || true
+            adb shell dumpsys activity activities > private-result/activity.txt 2>&1 || true
+            adb shell dumpsys window windows > private-result/windows.txt 2>&1 || true
+            adb shell pidof "$PACKAGE" > private-result/pid.txt 2>&1 || true
+            adb shell logcat -d -v threadtime > private-result/logcat.txt 2>&1 || true
+
+            python3 - <<'PY'
+            import json,pathlib,re
+            root=pathlib.Path("private-result")
+            pid=(root/"pid.txt").read_text(errors="replace").strip()
+            ui=(root/"window.xml").read_text(errors="replace") if (root/"window.xml").exists() else ""
+            log=(root/"logcat.txt").read_text(errors="replace") if (root/"logcat.txt").exists() else ""
+            auth=bool(re.search(r"login|sign.?in|account|register",ui,re.I))
+            abi=bool(re.search(r"UnsatisfiedLinkError|dlopen failed|native library|wrong ELF|ABI",log,re.I))
+            if pid and auth:
+                cls="STARTUP_AUTH_BOUNDARY"
+            elif pid:
+                cls="APP_RUNTIME_READY"
+            elif abi:
+                cls="NATIVE_ABI_BLOCK"
+            else:
+                cls="RUNTIME_BLOCK"
+            result={
+                "schema":"cdr-public-startup-runtime/v1",
+                "classification":cls,
+                "process_alive":bool(pid),
+                "auth_ui_signal":auth,
+                "native_abi_signal":abi,
+                "launch_rc":int((root/"launch-exit-code.txt").read_text().strip())
+            }
+            (root/"result.json").write_text(json.dumps(result,indent=2,sort_keys=True))
+            PY
+
+      - name: Seal substantive evidence
+        if: always()
+        shell: bash
+        env:
+          AGE_RECIPIENT: ${{ inputs.age_recipient }}
+          ASSIGNMENT_ID: ${{ inputs.assignment_id }}
+          WORKSET_ID: ${{ inputs.workset_id }}
+          DELEGATION_ID: ${{ inputs.delegation_id }}
+        run: |
+          set -euo pipefail
+          test -f private-result/result.json
+          tar -C private-result -czf .sealed/result.tar.gz .
+          age --encrypt --recipient "$AGE_RECIPIENT" --output .sealed/result.age .sealed/result.tar.gz
+          rm -f .sealed/result.tar.gz
+
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib
+          p=pathlib.Path(".sealed/result.age")
+          receipt={
+            "schema":"agent-dispatch-sealed-result/v1",
+            "assignment_id":os.environ["ASSIGNMENT_ID"],
+            "workset_id":os.environ["WORKSET_ID"],
+            "delegation_id":os.environ["DELEGATION_ID"],
+            "transport_status":"completed",
+            "ciphertext_sha256":hashlib.sha256(p.read_bytes()).hexdigest(),
+            "ciphertext_size":p.stat().st_size
+          }
+          pathlib.Path(".sealed/receipt.json").write_text(json.dumps(receipt,indent=2,sort_keys=True))
+          PY
+          rm -rf private-result work
+
+      - name: Upload sealed mailbox
+        if: always() && hashFiles('.sealed/result.age', '.sealed/receipt.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sealed-${{ inputs.assignment_id }}
+          path: |
+            .sealed/result.age
+            .sealed/receipt.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
