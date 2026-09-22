@@ -1,0 +1,46 @@
+name: JOYHUB anonymous bootstrap probe
+
+on:
+  push:
+    branches:
+      - probe/joyhub-anonymous-bootstrap
+    paths:
+      - tools/probe_joyhub_anonymous_bootstrap.py
+      - .github/workflows/joyhub-anonymous-bootstrap.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Compile probe
+        run: python -m py_compile tools/probe_joyhub_anonymous_bootstrap.py
+      - name: Execute bounded anonymous reads
+        run: |
+          mkdir -p out
+          python tools/probe_joyhub_anonymous_bootstrap.py | tee out/summary.json
+      - name: Validate probe policy
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open("out/summary.json"))
+          assert d["request_count"] == 5
+          assert d["policy"]["credentials_used"] is False
+          assert d["policy"]["cookies_used"] is False
+          assert d["policy"]["account_identifiers_used"] is False
+          assert d["policy"]["raw_payloads_published"] is False
+          print("policy gate PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: joyhub-anonymous-bootstrap-summary
+          path: out/summary.json
+          if-no-files-found: error
+          retention-days: 7
