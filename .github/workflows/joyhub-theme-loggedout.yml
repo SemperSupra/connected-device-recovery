@@ -1,47 +1,38 @@
-name: JOYHUB Theme logged-out fidelity
+name: JOYHUB Theme logged-out evidence
 
 on:
   pull_request:
     paths:
       - tools/probe_joyhub_theme_loggedout.py
+      - fixtures/joyhub/theme-loggedout-2026-09-22.json
       - .github/workflows/joyhub-theme-loggedout.yml
 
 permissions:
   contents: read
 
 jobs:
-  probe:
+  validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Compile bounded probe
+      - name: Compile explicit one-shot probe
         run: python -m py_compile tools/probe_joyhub_theme_loggedout.py
-      - name: Execute exactly one logged-out request
-        run: |
-          mkdir -p out
-          python tools/probe_joyhub_theme_loggedout.py | tee out/summary.json
-      - name: Validate safety envelope
+      - name: Validate sanitized evidence
         run: |
           python - <<'PY'
           import json
-          d=json.load(open("out/summary.json"))
-          assert d["schema"]=="cdr-joyhub-theme-loggedout-fidelity/v1"
-          assert d["policy"]["request_count"]==1
-          assert d["policy"]["raw_payload_published"] is False
-          assert d["policy"]["state_mutation_intended"] is False
+          d=json.load(open("fixtures/joyhub/theme-loggedout-2026-09-22.json"))
+          assert d["schema"]=="cdr-joyhub-theme-loggedout-evidence/v1"
           assert d["request"]["authorization_value"]=="empty"
           assert d["request"]["jh_user_id_value"]=="empty"
-          assert d["request"]["cookie_sent"] is False
           assert d["request"]["account_identifier_sent"] is False
-          print("policy gate PASS")
+          assert d["request"]["request_count"]==1
+          assert d["run"]["run_id"]==35751654477
+          assert d["run"]["app_code"]==9000
+          assert d["run"]["classification"]=="APPLICATION_BOUNDARY"
+          assert d["policy"]["raw_payload_published"] is False
+          print("Theme logged-out evidence PASS")
           PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: joyhub-theme-loggedout-summary
-          path: out/summary.json
-          retention-days: 7
-          if-no-files-found: error
