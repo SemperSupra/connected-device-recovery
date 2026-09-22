@@ -1,28 +1,50 @@
 #!/usr/bin/env python3
-"""Bounded anonymous JOYHUB bootstrap/content probe.
+"""Second-stage anonymous JOYHUB context-header probe.
 
-Sends exactly one POST to each recovered read-only candidate. No credentials,
-cookies, account identifiers, enumeration, binding, social mutation, or firmware
-actions are used. Output contains only structural summaries and hashes.
+Repeats only the four endpoints that returned application code 9000 in the
+minimal probe. Adds only non-auth request context recovered from the app's
+common OkHttp interceptor. No Authorization, Cookie, account identity, binding,
+social mutation, firmware action, or raw payload publication.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import sys
+import time
 import urllib.error
 import urllib.request
+import uuid
 
 BASE = "https://appapi.joyhub.net/"
 SYNTHETIC_DEVICE_ID = "cdr-anonymous-probe-20260922"
 
 TARGETS = [
-    ("api/config/Theme", None),
-    ("api/config/community", None),
-    ("api/config/waveLover", None),
-    ("api/games/list", None),
-    ("api/cfg/appCfg", {"deviceId": SYNTHETIC_DEVICE_ID}),
+    "api/config/Theme",
+    "api/config/community",
+    "api/config/waveLover",
+    "api/games/list",
 ]
+
+
+def common_headers():
+    return {
+        "Accept": "application/json",
+        "User-Agent": "okhttp/3.12.13",
+        "JH-Device": "Android",
+        "JH-FromApp": "Joyhub",
+        "JH-DeviceId": SYNTHETIC_DEVICE_ID,
+        "X-Request-ID": str(uuid.uuid4()),
+        "JH-AppVersion": "2.14.2",
+        "JH-SystemVersion": "0",
+        "JH-DeviceModel": "CDR",
+        "JH-Screen": "0x0",
+        "JH-Lang": "en",
+        "Content-Language": "en",
+        "JH-clientTime": str(int(time.time() * 1000)),
+        "JH-NetworkType": "unknown",
+        "Time-Zone": "UTC",
+        "Utc-Offset": "+00:00",
+    }
 
 
 def summarize_json(obj):
@@ -30,9 +52,8 @@ def summarize_json(obj):
     if isinstance(obj, dict):
         out["top_level_keys"] = sorted(obj.keys())
         for key in ("code", "result", "status", "success", "responseCode", "responseMsg", "msg", "message"):
-            if key in obj and isinstance(obj[key], (str, int, float, bool)) or obj.get(key) is None:
-                if key in obj:
-                    out[key] = obj[key]
+            if key in obj and (obj[key] is None or isinstance(obj[key], (str, int, float, bool))):
+                out[key] = obj[key]
         for key in ("data", "resultData", "rows", "list"):
             if key not in obj:
                 continue
@@ -51,21 +72,9 @@ def summarize_json(obj):
     return out
 
 
-def request(endpoint, body):
-    url = BASE + endpoint
-    data = None
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "Connected-Device-Recovery/anonymous-read-probe",
-    }
-    if body is not None:
-        data = json.dumps(body, separators=(",", ":")).encode()
-        headers["Content-Type"] = "application/json"
-    else:
-        # Retrofit POST without @Body emits an empty request body.
-        data = b""
-
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+def request(endpoint):
+    headers = common_headers()
+    req = urllib.request.Request(BASE + endpoint, data=b"", headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as response:
             raw = response.read()
@@ -89,34 +98,44 @@ def request(endpoint, body):
         "content_type": content_type,
         "response_bytes": len(raw),
         "sha256": hashlib.sha256(raw).hexdigest(),
-        "request_body_keys": sorted(body.keys()) if body else [],
         "authorization_sent": False,
         "cookie_sent": False,
+        "context_headers_sent": sorted(headers.keys()),
     }
+
+    parsed = None
     try:
         parsed = json.loads(raw.decode("utf-8"))
         row["json"] = summarize_json(parsed)
     except Exception:
         row["json"] = None
 
-    if 200 <= status < 300:
-        row["classification"] = "ANONYMOUS_HTTP_OK"
-    elif status in (401, 403):
+    if status in (401, 403):
         row["classification"] = "AUTH_BOUNDARY"
+    elif 200 <= status < 300 and isinstance(parsed, dict):
+        app_code = parsed.get("code")
+        app_status = parsed.get("status")
+        if app_code == 0 or app_status == "success":
+            row["classification"] = "ANONYMOUS_READ_OK"
+        else:
+            row["classification"] = "APPLICATION_BOUNDARY"
+    elif 200 <= status < 300:
+        row["classification"] = "ANONYMOUS_HTTP_NONJSON"
     else:
         row["classification"] = "CONTRACT_OR_SERVER_BOUNDARY"
     return row
 
 
 def main():
-    results = [request(endpoint, body) for endpoint, body in TARGETS]
+    results = [request(endpoint) for endpoint in TARGETS]
     print(json.dumps({
-        "schema": "cdr-joyhub-anonymous-bootstrap-probe/v1",
+        "schema": "cdr-joyhub-anonymous-context-probe/v1",
         "base": BASE,
         "request_count": len(results),
         "results": results,
         "policy": {
             "credentials_used": False,
+            "authorization_header_sent": False,
             "cookies_used": False,
             "account_identifiers_used": False,
             "device_id": "synthetic-non-user",
