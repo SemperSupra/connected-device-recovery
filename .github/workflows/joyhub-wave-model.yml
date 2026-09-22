@@ -1,0 +1,32 @@
+name: JOYHUB J-MowgliII wave-model evidence
+on:
+  pull_request:
+    paths:
+      - tools/probe_joyhub_wave_model.py
+      - fixtures/joyhub/wave-model-j-mowgliii-2026-09-22.json
+      - .github/workflows/joyhub-wave-model.yml
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - run: python -m py_compile tools/probe_joyhub_wave_model.py
+      - name: Validate sanitized evidence
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open("fixtures/joyhub/wave-model-j-mowgliii-2026-09-22.json"))
+          assert d["schema"]=="cdr-joyhub-wave-model-evidence/v1"
+          assert d["request"]["product_id"]=="320"
+          assert d["request"]["account_identifier_sent"] is False
+          assert d["run"]["run_id"]==35752098899
+          assert d["run"]["app_code"]==9000
+          assert d["run"]["classification"]=="APPLICATION_BOUNDARY"
+          assert d["policy"]["server_ids_guessed"] is False
+          assert d["policy"]["raw_payload_published"] is False
+          print("wave-model evidence PASS")
+          PY
