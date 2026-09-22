@@ -1,0 +1,47 @@
+name: JOYHUB J-MowgliII anonymous video list
+
+on:
+  pull_request:
+    paths:
+      - tools/probe_joyhub_video_list.py
+      - .github/workflows/joyhub-video-list.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Compile bounded probe
+        run: python -m py_compile tools/probe_joyhub_video_list.py
+      - name: Execute one anonymous read
+        run: |
+          mkdir -p out
+          python tools/probe_joyhub_video_list.py | tee out/summary.json
+      - name: Validate safety policy
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open("out/summary.json"))
+          assert d["schema"]=="cdr-joyhub-video-list-probe/v1"
+          r=d["request"]
+          assert r["authorization_sent"] is False
+          assert r["cookie_sent"] is False
+          assert r["account_identifier_sent"] is False
+          assert d["policy"]["raw_payload_published"] is False
+          assert d["policy"]["server_ids_guessed"] is False
+          assert d["policy"]["state_mutation_intended"] is False
+          print("policy gate PASS")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: joyhub-video-list-summary
+          path: out/summary.json
+          retention-days: 7
+          if-no-files-found: error
