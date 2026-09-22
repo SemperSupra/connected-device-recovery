@@ -33,6 +33,7 @@ def main() -> int:
         "delegation_id:",
         "assignment_id:",
         "age_recipient:",
+        "age1[023456789acdefghjklmnpqrstuvwxyz]{58}",
         "age --encrypt",
         ".sealed/result.age",
         ".sealed/receipt.json",

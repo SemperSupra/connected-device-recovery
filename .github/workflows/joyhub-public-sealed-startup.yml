@@ -52,7 +52,7 @@ jobs:
               value=os.environ[key]
               if not opaque.fullmatch(value):
                   raise SystemExit(f"invalid opaque identifier: {key}")
-          if not re.fullmatch(r"age1[0-9a-z]{58}", os.environ["AGE_RECIPIENT"]):
+          if not re.fullmatch(r"age1[023456789acdefghjklmnpqrstuvwxyz]{58}", os.environ["AGE_RECIPIENT"]):
               raise SystemExit("invalid age X25519 recipient")
           PY
 
