@@ -1,0 +1,44 @@
+{
+  "schema": "cdr-joyhub-video-list-evidence/v1",
+  "date": "2026-09-22",
+  "source": {
+    "app": "JOYHUB Android 2.14.2 / v299",
+    "endpoint": "api/video/list",
+    "base": "https://appapi.joyhub.net/",
+    "product_code_source": "qualified live catalog J-MowgliII",
+    "product_code": "3333"
+  },
+  "request": {
+    "method": "POST",
+    "body": {
+      "product_code": "3333",
+      "page": "1",
+      "per_size": 6
+    },
+    "authorization_sent": false,
+    "cookie_sent": false,
+    "account_identifier_sent": false,
+    "device_id": "synthetic-non-user"
+  },
+  "run": {
+    "run_id": 35751222291,
+    "http_status": 200,
+    "app_code": 9000,
+    "app_status": "warning",
+    "message": "System error[9000]",
+    "classification": "APPLICATION_BOUNDARY",
+    "response_bytes": 102,
+    "sha256": "ec6ea2af4b7026b10b408277c248a2b0e3480f217a988f406dd5d54ff9b40cd0"
+  },
+  "interpretation": [
+    "The exact recovered request shape and default appapi base do not produce anonymous application success for J-MowgliII.",
+    "HTTP 200 is not application success.",
+    "Code 9000 is not independently sufficient to label the endpoint AUTH_REQUIRED.",
+    "Do not repeat this anonymous request without a new discriminator."
+  ],
+  "policy": {
+    "raw_payload_published": false,
+    "server_ids_guessed": false,
+    "state_mutation_intended": false
+  }
+}
