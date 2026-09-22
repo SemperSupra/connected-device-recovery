@@ -1,0 +1,39 @@
+{
+  "schema": "cdr-joyhub-theme-loggedout-evidence/v1",
+  "date": "2026-09-22",
+  "source": {
+    "app": "JOYHUB Android 2.14.2 / v299",
+    "endpoint": "api/config/Theme",
+    "base": "https://appapi.joyhub.net/",
+    "interceptor": "logged-out exact header-shape reconstruction"
+  },
+  "request": {
+    "method": "POST",
+    "body": "empty",
+    "authorization_value": "empty",
+    "jh_user_id_value": "empty",
+    "cookie_sent": false,
+    "account_identifier_sent": false,
+    "device_id": "synthetic-non-user",
+    "request_count": 1
+  },
+  "run": {
+    "run_id": 35751654477,
+    "http_status": 200,
+    "app_code": 9000,
+    "app_status": "warning",
+    "message": "System error[9000]",
+    "classification": "APPLICATION_BOUNDARY",
+    "response_bytes": 102,
+    "sha256": "ec6ea2af4b7026b10b408277c248a2b0e3480f217a988f406dd5d54ff9b40cd0"
+  },
+  "interpretation": [
+    "Exact logged-out interceptor header presence does not make api/config/Theme anonymously successful.",
+    "Do not repeat Theme/community/waveLover/games-list anonymously without runtime evidence of a materially different state.",
+    "Code 9000 remains an application/state boundary; it is not independently labeled AUTH_REQUIRED."
+  ],
+  "policy": {
+    "raw_payload_published": false,
+    "state_mutation_intended": false
+  }
+}
