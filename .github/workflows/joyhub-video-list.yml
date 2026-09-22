@@ -1,0 +1,40 @@
+name: JOYHUB J-MowgliII video evidence
+
+on:
+  pull_request:
+    paths:
+      - tools/probe_joyhub_video_list.py
+      - fixtures/joyhub/video-list-j-mowgliii-2026-09-22.json
+      - .github/workflows/joyhub-video-list.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Compile explicit one-shot probe
+        run: python -m py_compile tools/probe_joyhub_video_list.py
+      - name: Validate sanitized evidence fixture
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open("fixtures/joyhub/video-list-j-mowgliii-2026-09-22.json"))
+          assert d["schema"]=="cdr-joyhub-video-list-evidence/v1"
+          assert d["request"]["authorization_sent"] is False
+          assert d["request"]["cookie_sent"] is False
+          assert d["request"]["account_identifier_sent"] is False
+          assert d["request"]["body"]=={"product_code":"3333","page":"1","per_size":6}
+          assert d["run"]["run_id"]==35751222291
+          assert d["run"]["http_status"]==200
+          assert d["run"]["app_code"]==9000
+          assert d["run"]["classification"]=="APPLICATION_BOUNDARY"
+          assert d["policy"]["raw_payload_published"] is False
+          assert d["policy"]["server_ids_guessed"] is False
+          print("video-list evidence fixture PASS")
+          PY
