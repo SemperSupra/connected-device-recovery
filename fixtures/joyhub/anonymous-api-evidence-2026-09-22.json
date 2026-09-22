@@ -1,0 +1,139 @@
+{
+  "schema": "cdr-joyhub-anonymous-api-evidence/v1",
+  "date": "2026-09-22",
+  "policy": {
+    "credentials_used": false,
+    "authorization_header_sent": false,
+    "cookies_used": false,
+    "account_identifiers_used": false,
+    "device_id": "synthetic-non-user",
+    "raw_payloads_published": false
+  },
+  "runs": [
+    {
+      "run_id": 35749323392,
+      "experiment": "minimal anonymous bootstrap",
+      "results": [
+        {
+          "endpoint": "api/config/Theme",
+          "http_status": 200,
+          "app_code": 9000,
+          "app_status": "warning",
+          "classification": "APPLICATION_BOUNDARY",
+          "sha256": "ec6ea2af4b7026b10b408277c248a2b0e3480f217a988f406dd5d54ff9b40cd0"
+        },
+        {
+          "endpoint": "api/config/community",
+          "http_status": 200,
+          "app_code": 9000,
+          "app_status": "warning",
+          "classification": "APPLICATION_BOUNDARY",
+          "sha256": "ec6ea2af4b7026b10b408277c248a2b0e3480f217a988f406dd5d54ff9b40cd0"
+        },
+        {
+          "endpoint": "api/config/waveLover",
+          "http_status": 200,
+          "app_code": 9000,
+          "app_status": "warning",
+          "classification": "APPLICATION_BOUNDARY",
+          "sha256": "ec6ea2af4b7026b10b408277c248a2b0e3480f217a988f406dd5d54ff9b40cd0"
+        },
+        {
+          "endpoint": "api/games/list",
+          "http_status": 200,
+          "app_code": 9000,
+          "app_status": "warning",
+          "classification": "APPLICATION_BOUNDARY",
+          "sha256": "ec6ea2af4b7026b10b408277c248a2b0e3480f217a988f406dd5d54ff9b40cd0"
+        },
+        {
+          "endpoint": "api/cfg/appCfg",
+          "http_status": 200,
+          "app_code": 0,
+          "app_status": "success",
+          "classification": "QUALIFIED_ANONYMOUS_READ",
+          "response_shape": {
+            "data_type": "list",
+            "data_length": 4,
+            "item_keys": [
+              "created_at",
+              "creator",
+              "creatorId",
+              "id",
+              "info",
+              "jump_type",
+              "link",
+              "name",
+              "pic_link",
+              "pic_link_gle",
+              "sort"
+            ]
+          },
+          "sha256": "a6a0585ef7fa0b473da7658e2cbe9270ee029324ef75d3034257d87c9879b3de"
+        }
+      ]
+    },
+    {
+      "run_id": 35750023107,
+      "experiment": "anonymous non-auth common JH context",
+      "context_headers": [
+        "Accept",
+        "Content-Language",
+        "JH-AppVersion",
+        "JH-Device",
+        "JH-DeviceId",
+        "JH-DeviceModel",
+        "JH-FromApp",
+        "JH-Lang",
+        "JH-NetworkType",
+        "JH-Screen",
+        "JH-SystemVersion",
+        "JH-clientTime",
+        "Time-Zone",
+        "User-Agent",
+        "Utc-Offset",
+        "X-Request-ID"
+      ],
+      "results": [
+        {
+          "endpoint": "api/config/Theme",
+          "http_status": 200,
+          "app_code": 9000,
+          "app_status": "warning",
+          "classification": "APPLICATION_BOUNDARY",
+          "sha256": "ec6ea2af4b7026b10b408277c248a2b0e3480f217a988f406dd5d54ff9b40cd0"
+        },
+        {
+          "endpoint": "api/config/community",
+          "http_status": 200,
+          "app_code": 9000,
+          "app_status": "warning",
+          "classification": "APPLICATION_BOUNDARY",
+          "sha256": "ec6ea2af4b7026b10b408277c248a2b0e3480f217a988f406dd5d54ff9b40cd0"
+        },
+        {
+          "endpoint": "api/config/waveLover",
+          "http_status": 200,
+          "app_code": 9000,
+          "app_status": "warning",
+          "classification": "APPLICATION_BOUNDARY",
+          "sha256": "ec6ea2af4b7026b10b408277c248a2b0e3480f217a988f406dd5d54ff9b40cd0"
+        },
+        {
+          "endpoint": "api/games/list",
+          "http_status": 200,
+          "app_code": 9000,
+          "app_status": "warning",
+          "classification": "APPLICATION_BOUNDARY",
+          "sha256": "ec6ea2af4b7026b10b408277c248a2b0e3480f217a988f406dd5d54ff9b40cd0"
+        }
+      ]
+    }
+  ],
+  "interpretation": [
+    "api/cfg/appCfg is qualified anonymous for the tested synthetic-device contract.",
+    "HTTP 200 alone is not application success; code 9000 remains an unresolved application boundary.",
+    "Adding the recovered non-auth JH request-context headers did not change the four code-9000 results.",
+    "The four unresolved endpoints are not classified AUTH_REQUIRED from these probes alone."
+  ]
+}
