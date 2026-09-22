@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SemperSupra/connected-device-recovery/schemas/campaign.schema.json",
+  "title": "Connected Device Recovery Campaign",
+  "type": "object",
+  "required": ["id", "title", "status", "objective"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "title": {"type": "string", "minLength": 1},
+    "status": {"enum": ["registered", "active", "blocked", "dormant", "complete"]},
+    "objective": {"type": "string", "minLength": 1},
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"type": "string", "minLength": 1},
+          "version": {"type": ["string", "null"]},
+          "locator": {"type": ["string", "null"]},
+          "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "providers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "locator"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"type": "string", "minLength": 1},
+          "locator": {"type": "string", "minLength": 1},
+          "role": {"type": ["string", "null"]}
+        },
+        "additionalProperties": true
+      }
+    },
+    "oracles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "locator", "exposure"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"type": ["string", "null"]},
+          "locator": {"type": "string", "minLength": 1},
+          "revision": {"type": ["string", "null"]},
+          "exposure": {"enum": ["open", "recovery_visible", "evaluator_only"]},
+          "expose_after": {"enum": ["immediate", "recovery_sealed"]}
+        },
+        "additionalProperties": true
+      }
+    },
+    "authority": {"type": "object"},
+    "safety": {"type": "array", "items": {"type": "string"}},
+    "consumers": {"type": "array", "items": {"type": "string"}},
+    "historical_evidence": {"type": "array", "items": {"type": "string"}},
+    "notes": {"type": ["string", "null"]}
+  },
+  "additionalProperties": true
+}
