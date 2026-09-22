@@ -1,0 +1,22 @@
+name: JOYHUB sealed runtime contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/joyhub-public-sealed-startup.yml'
+      - '.github/workflows/joyhub-public-sealed-contract.yml'
+      - 'tools/check_joyhub_public_sealed_workflow.py'
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Verify public/private sealed boundary
+        run: python3 tools/check_joyhub_public_sealed_workflow.py
