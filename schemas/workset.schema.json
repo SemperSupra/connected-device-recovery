@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SemperSupra/connected-device-recovery/schemas/workset.schema.json",
+  "title": "Connected Device Recovery Workset",
+  "type": "object",
+  "required": ["id", "campaign", "objective", "policy", "work"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "campaign": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "objective": {"type": "string", "minLength": 1},
+    "owner_issue": {"type": ["string", "null"]},
+    "provider_issue": {"type": ["string", "null"]},
+    "policy": {
+      "type": "object",
+      "required": ["continue_on", "stop_on"],
+      "properties": {
+        "continue_on": {
+          "oneOf": [
+            {"type": "string"},
+            {"type": "array", "minItems": 1, "items": {"type": "string"}}
+          ]
+        },
+        "stop_on": {"type": "array", "items": {"type": "string"}},
+        "delegation_depth_default": {"type": "integer", "minimum": 0},
+        "confidence": {"type": "array", "items": {"type": "string"}},
+        "prohibitions": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "work": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "status", "exit"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "title": {"type": "string", "minLength": 1},
+          "status": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+          "parallel_group": {"type": ["string", "null"]},
+          "local_actor_required": {"type": "boolean"},
+          "blocked_by": {"type": "array", "items": {"type": "string"}},
+          "dependency": {"type": "array", "items": {"type": "string"}},
+          "provider": {"type": ["string", "null"]},
+          "provider_context": {"type": "array", "items": {"type": "string"}},
+          "experiment": {"type": ["string", "null"]},
+          "unknown": {"type": ["string", "null"]},
+          "inputs": {"type": "array", "items": {"type": "string"}},
+          "outputs": {"type": "array", "items": {"type": "string"}},
+          "evidence": {"type": "array", "items": {"type": "string"}},
+          "safety": {"type": "array", "items": {"type": "string"}},
+          "exit": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

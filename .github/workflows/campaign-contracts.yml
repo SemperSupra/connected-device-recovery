@@ -1,0 +1,43 @@
+name: Campaign contracts
+
+on:
+  pull_request:
+    paths:
+      - schemas/campaign.schema.json
+      - schemas/workset.schema.json
+      - tools/validate_campaign_state.py
+      - fixtures/campaign-contract/**
+      - tests/test_campaign_contract.py
+      - docs/campaign-contracts.md
+      - .github/workflows/campaign-contracts.yml
+  push:
+    branches: [main]
+    paths:
+      - schemas/campaign.schema.json
+      - schemas/workset.schema.json
+      - tools/validate_campaign_state.py
+      - fixtures/campaign-contract/**
+      - tests/test_campaign_contract.py
+      - docs/campaign-contracts.md
+      - .github/workflows/campaign-contracts.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install validation dependencies
+        run: python -m pip install --disable-pip-version-check "PyYAML>=6,<7" "jsonschema>=4,<5"
+      - name: Unit tests
+        run: python -m unittest tests.test_campaign_contract -v
+      - name: Validate generic fixture
+        run: |
+          python tools/validate_campaign_state.py \
+            --campaign-root fixtures/campaign-contract/campaigns \
+            --workset-root fixtures/campaign-contract/worksets

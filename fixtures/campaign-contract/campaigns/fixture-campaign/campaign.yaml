@@ -1,0 +1,18 @@
+id: fixture-campaign
+title: Fixture campaign
+status: active
+objective: Prove the generic campaign contract without embedding a real target.
+targets:
+  - id: fixture-target
+    kind: synthetic
+providers:
+  - id: fixture-provider
+    kind: analysis
+    locator: example/provider
+oracles:
+  - id: fixture-oracle
+    locator: example/oracle@deadbeef
+    exposure: evaluator_only
+    expose_after: recovery_sealed
+safety:
+  - no external mutation

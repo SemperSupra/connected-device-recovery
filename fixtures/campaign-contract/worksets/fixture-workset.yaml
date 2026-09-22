@@ -1,0 +1,22 @@
+id: fixture-workset
+campaign: fixture-campaign
+objective: Exercise dependency and evidence fields.
+policy:
+  continue_on: PASS
+  stop_on: [BLOCK, FAILURE, DECISION_REQUIRED]
+  delegation_depth_default: 1
+work:
+  - id: F1
+    title: Establish baseline
+    status: PASS
+    local_actor_required: false
+    evidence:
+      - fixture baseline
+    exit: Baseline exists.
+  - id: F2
+    title: Run bounded experiment
+    status: READY_NONLOCAL
+    local_actor_required: false
+    blocked_by: [F1]
+    provider: example/provider#1
+    exit: Result is recorded without changing the external system.
