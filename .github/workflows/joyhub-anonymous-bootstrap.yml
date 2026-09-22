@@ -1,9 +1,7 @@
 name: JOYHUB anonymous bootstrap probe
 
 on:
-  push:
-    branches:
-      - probe/joyhub-anonymous-bootstrap
+  pull_request:
     paths:
       - tools/probe_joyhub_anonymous_bootstrap.py
       - .github/workflows/joyhub-anonymous-bootstrap.yml
