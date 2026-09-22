@@ -72,8 +72,9 @@ jobs:
 
           mapfile -t archives < <(find work/download -maxdepth 1 -type f \( -iname '*.apk' -o -iname '*.xapk' -o -iname '*.apkm' \) | sort)
           if [ "${#archives[@]}" -ne 1 ]; then
-            printf '{"phase":"acquisition","status":"blocked","reason":"archive-count"}\n' > private-result/result.json
-            exit 31
+            printf '{"schema":"cdr-public-startup-runtime/v1","classification":"ACQUISITION_BLOCK","reason":"archive-count"}\n' > private-result/result.json
+            touch work/skip-runtime
+            exit 0
           fi
           archive="${archives[0]}"
           printf '%s\n' "$archive" > work/archive.path
@@ -139,6 +140,7 @@ jobs:
           PY
 
       - name: Enable KVM
+        if: hashFiles('work/skip-runtime') == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -148,6 +150,7 @@ jobs:
           test -e /dev/kvm
 
       - name: Boot emulator and capture startup evidence
+        if: hashFiles('work/skip-runtime') == ''
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
           api-level: 35
