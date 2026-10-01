@@ -1,0 +1,158 @@
+name: Characterize official ChatGPT Windows packages
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/chatgpt-windows-oracle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  characterize:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            url: https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix
+          - arch: arm64
+            url: https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix
+
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      STORE_ID: 9PLM9XGG6VKS
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Acquire current Store-signed MSIX directly from OpenAI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = '${{ matrix.arch }}'
+          $url = '${{ matrix.url }}'
+          $out = Join-Path $PWD "out/chatgpt-windows-$arch"
+          $work = Join-Path $env:RUNNER_TEMP "chatgpt-windows-$arch"
+          $msix = Join-Path $work 'ChatGPT.msix'
+          $extract = Join-Path $work 'extract'
+          New-Item -ItemType Directory -Force -Path $out,$extract | Out-Null
+
+          Invoke-WebRequest -Uri $url -OutFile $msix
+          $sha = (Get-FileHash -Algorithm SHA256 -Path $msix).Hash.ToLowerInvariant()
+          $size = (Get-Item $msix).Length
+          $sig = Get-AuthenticodeSignature -FilePath $msix
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($msix, $extract)
+
+          $manifestPath = Join-Path $extract 'AppxManifest.xml'
+          if (!(Test-Path $manifestPath)) { throw 'AppxManifest.xml missing from official MSIX.' }
+          [xml]$manifest = Get-Content $manifestPath -Raw
+
+          $identity = $manifest.SelectSingleNode("//*[local-name()='Identity']")
+          if (-not $identity) { throw 'Package Identity missing from AppxManifest.xml.' }
+
+          $caps = @($manifest.SelectNodes("//*[local-name()='Capability'] | //*[local-name()='DeviceCapability'] | //*[local-name()='CustomCapability']") |
+            ForEach-Object { [string]$_.Name } | Where-Object { $_ } | Sort-Object -Unique)
+          $protocols = @($manifest.SelectNodes("//*[local-name()='Protocol']") |
+            ForEach-Object { [string]$_.Name } | Where-Object { $_ } | Sort-Object -Unique)
+          $aliases = @($manifest.SelectNodes("//*[local-name()='ExecutionAlias']") |
+            ForEach-Object { [string]$_.Alias } | Where-Object { $_ } | Sort-Object -Unique)
+          $deps = @($manifest.SelectNodes("//*[local-name()='PackageDependency']") |
+            ForEach-Object { [string]$_.Name } | Where-Object { $_ } | Sort-Object -Unique)
+
+          $files = @(Get-ChildItem $extract -Recurse -File)
+          $extensionCounts = @{}
+          foreach ($file in $files) {
+            $ext = if ($file.Extension) { $file.Extension.ToLowerInvariant() } else { '<none>' }
+            if (-not $extensionCounts.ContainsKey($ext)) { $extensionCounts[$ext] = 0 }
+            $extensionCounts[$ext]++
+          }
+
+          $interesting = @($files |
+            Where-Object {
+              $_.Extension -match '^\.(exe|dll|node|pak|wasm|js|asar|json|toml|yaml|yml|ps1|cmd|bat)$' -or
+              $_.Name -match '(?i)(codex|chatgpt|browser|playwright|cua|computer|plugin|skill|mcp|sandbox|remote|hid|pty)'
+            } |
+            ForEach-Object { $_.FullName.Substring($extract.Length + 1).Replace('\','/') } |
+            Sort-Object -Unique |
+            Select-Object -First 2000)
+
+          $executables = @()
+          foreach ($file in $files | Where-Object { $_.Extension -match '^\.(exe|dll|node)$' } | Select-Object -First 600) {
+            $rel = $file.FullName.Substring($extract.Length + 1).Replace('\','/')
+            $record = [ordered]@{
+              path = $rel
+              size_bytes = $file.Length
+              sha256 = (Get-FileHash -Algorithm SHA256 -Path $file.FullName).Hash.ToLowerInvariant()
+            }
+            try {
+              $fsig = Get-AuthenticodeSignature -FilePath $file.FullName
+              $record.signature_status = [string]$fsig.Status
+              $record.signer_subject = if ($fsig.SignerCertificate) { $fsig.SignerCertificate.Subject } else { $null }
+            } catch {
+              $record.signature_status = 'ERROR'
+            }
+            $executables += $record
+          }
+
+          $blockMapPath = Join-Path $extract 'AppxBlockMap.xml'
+          $derived = [ordered]@{
+            schema = 'cdr-chatgpt-windows-derived-package/v2'
+            evidence_date = '2026-10-01'
+            source_url = $url
+            store_id = $env:STORE_ID
+            requested_architecture = $arch
+            package = [ordered]@{
+              sha256 = $sha
+              size_bytes = $size
+              signature_status = [string]$sig.Status
+              signer_subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { $null }
+              signer_thumbprint = if ($sig.SignerCertificate) { $sig.SignerCertificate.Thumbprint } else { $null }
+            }
+            identity = [ordered]@{
+              name = [string]$identity.Name
+              publisher = [string]$identity.Publisher
+              version = [string]$identity.Version
+              processor_architecture = [string]$identity.ProcessorArchitecture
+              resource_id = [string]$identity.ResourceId
+            }
+            capabilities = $caps
+            protocols = $protocols
+            execution_aliases = $aliases
+            dependencies = $deps
+            file_count = $files.Count
+            extension_counts = $extensionCounts
+            interesting_paths = $interesting
+            executable_inventory = $executables
+            manifest_sha256 = (Get-FileHash -Algorithm SHA256 -Path $manifestPath).Hash.ToLowerInvariant()
+            block_map_sha256 = if (Test-Path $blockMapPath) { (Get-FileHash -Algorithm SHA256 -Path $blockMapPath).Hash.ToLowerInvariant() } else { $null }
+            proprietary_bytes_published = $false
+            claim_boundary = 'Derived package metadata only. MSIX and extracted proprietary payloads remain transient and are not uploaded.'
+          }
+
+          $derived | ConvertTo-Json -Depth 20 | Set-Content -Encoding UTF8 (Join-Path $out 'derived-package.json')
+          Remove-Item -Force -Recurse $work -ErrorAction SilentlyContinue
+
+      - name: Prove proprietary package payload is absent
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $PWD 'out/chatgpt-windows-${{ matrix.arch }}'
+          $bad = @(Get-ChildItem $out -Recurse -File |
+            Where-Object { $_.Extension -match '^\.(msix|appx|msixbundle|appxbundle|exe|dll|node|asar)$' })
+          if ($bad.Count -ne 0) {
+            $bad | ForEach-Object { Write-Host $_.FullName }
+            throw 'Proprietary payload escaped into publish tree.'
+          }
+
+      - name: Upload sanitized Windows oracle evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-windows-${{ matrix.arch }}-derived-oracle
+          path: out/chatgpt-windows-${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 7
