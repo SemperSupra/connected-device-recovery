@@ -14,7 +14,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 20
     env:
-      STORE_ID: 9NT1R1C2HH7J
+      STORE_ID: 9PLM9XGG6VKS
     steps:
       - uses: actions/checkout@v4
 
