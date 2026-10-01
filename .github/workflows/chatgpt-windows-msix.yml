@@ -1,0 +1,76 @@
+name: Characterize ChatGPT Windows MSIX
+
+on:
+  pull_request:
+    paths:
+      - 'tools/characterize_windows_msix.py'
+      - '.github/workflows/chatgpt-windows-msix.yml'
+      - 'tests/test_characterize_windows_msix.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  characterize-x64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      SOURCE_URL: https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Acquire official OpenAI Store-signed MSIX
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --retry-delay 2 \
+            --output "$RUNNER_TEMP/ChatGPT-x64.msix" \
+            "$SOURCE_URL"
+          test -s "$RUNNER_TEMP/ChatGPT-x64.msix"
+
+      - name: Derive public-safe package surface
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python tools/characterize_windows_msix.py \
+            "$RUNNER_TEMP/ChatGPT-x64.msix" \
+            --source-url "$SOURCE_URL" \
+            --architecture x64 \
+            --output out/chatgpt-windows-x64-derived.json
+
+      - name: Verify report contains no package payload
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path("out/chatgpt-windows-x64-derived.json")
+          data = json.loads(p.read_text(encoding="utf-8"))
+          assert data["schema"] == "cdr-derived-windows-msix-surface/v1"
+          assert data["package"]["sha256"]
+          assert data["package"]["identity"]
+          assert "AppxManifest.xml" not in data.get("package", {})
+          print(json.dumps({
+              "identity": data["package"]["identity"],
+              "sha256": data["package"]["sha256"],
+              "size_bytes": data["package"]["size_bytes"],
+              "capabilities": data["manifest"]["capabilities"],
+              "applications": data["manifest"]["applications"],
+              "extensions": data["manifest"]["extensions"],
+              "executables": data["files"]["executables"],
+              "selected_markers": data["files"]["selected_markers"],
+          }, indent=2))
+          PY
+
+      - name: Delete proprietary MSIX before artifact upload
+        if: always()
+        run: rm -f "$RUNNER_TEMP/ChatGPT-x64.msix"
+
+      - name: Upload derived evidence only
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-windows-x64-derived
+          path: out/chatgpt-windows-x64-derived.json
+          if-no-files-found: error
+          retention-days: 7
