@@ -3,6 +3,7 @@ name: Characterize official ChatGPT macOS applications
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/chatgpt-macos-oracle.yml'
       - 'tools/characterize_desktop_bundle.py'
