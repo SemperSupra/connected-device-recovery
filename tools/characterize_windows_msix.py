@@ -6,10 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import pathlib
-import re
-import sys
 import zipfile
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -19,6 +16,14 @@ from datetime import datetime, timezone
 def sha256_path(path: pathlib.Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sha256_zip_entry(zf: zipfile.ZipFile, name: str) -> str:
+    h = hashlib.sha256()
+    with zf.open(name) as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
@@ -56,6 +61,10 @@ def selected_file_markers(names: list[str]) -> dict[str, bool]:
         "mcp_strings": ("mcp",),
         "browser_assets": ("browser",),
         "voice_audio_assets": ("voice", "audio"),
+        "computer_use": ("computer-use", "cua_node"),
+        "windows_sandbox": ("windows-sandbox",),
+        "chrome_extension_host": ("extension-host",),
+        "tectonic": ("tectonic",),
     }
     return {
         key: any(any(needle in n for needle in values) for n in lower)
@@ -68,13 +77,52 @@ def compact_paths(names: list[str], suffixes: set[str], limit: int = 200) -> lis
     return out[:limit]
 
 
+def resource_topology(names: list[str]) -> dict:
+    resources_prefix = "app/resources/"
+    resource_roots = Counter()
+    unpacked_modules = set()
+    bundled_plugins = set()
+
+    for name in names:
+        normalized = name.replace("\\", "/")
+        if normalized.startswith(resources_prefix):
+            rest = normalized[len(resources_prefix):]
+            first = rest.split("/", 1)[0]
+            if first:
+                resource_roots[first] += 1
+
+        marker = "app/resources/app.asar.unpacked/node_modules/"
+        if normalized.startswith(marker):
+            rest = normalized[len(marker):]
+            parts = rest.split("/")
+            if parts:
+                if parts[0].startswith("@") and len(parts) > 1:
+                    unpacked_modules.add(parts[0] + "/" + parts[1])
+                else:
+                    unpacked_modules.add(parts[0])
+
+        plugin_marker = "app/resources/plugins/openai-bundled/plugins/"
+        if normalized.startswith(plugin_marker):
+            rest = normalized[len(plugin_marker):]
+            plugin = rest.split("/", 1)[0]
+            if plugin:
+                bundled_plugins.add(plugin)
+
+    return {
+        "resource_roots": dict(sorted(resource_roots.items())),
+        "asar_unpacked_node_modules": sorted(unpacked_modules),
+        "bundled_plugin_ids": sorted(bundled_plugins),
+    }
+
+
 def characterize(path: pathlib.Path, source_url: str, architecture_hint: str) -> dict:
     if not zipfile.is_zipfile(path):
         raise SystemExit(f"{path} is not a ZIP-compatible MSIX/AppX package")
 
     with zipfile.ZipFile(path) as zf:
         infos = zf.infolist()
-        names = [i.filename for i in infos if not i.is_dir()]
+        info_by_name = {i.filename: i for i in infos if not i.is_dir()}
+        names = list(info_by_name)
         manifest_name = next(
             (n for n in names if n.lower() == "appxmanifest.xml"),
             None,
@@ -94,18 +142,13 @@ def characterize(path: pathlib.Path, source_url: str, architecture_hint: str) ->
 
         dependencies = []
         for dep in walk_named(root, "PackageDependency"):
-            dependencies.append(attrs(dep))
+            dependencies.append({"kind": "PackageDependency", **attrs(dep)})
         for dep in walk_named(root, "TargetDeviceFamily"):
             dependencies.append({"kind": "TargetDeviceFamily", **attrs(dep)})
 
         capabilities = []
         for element in root.iter():
-            if local_name(element.tag) in {
-                "Capability",
-                "DeviceCapability",
-                "CustomCapability",
-                "uap:Capability",
-            } or local_name(element.tag).endswith("Capability"):
+            if local_name(element.tag).endswith("Capability"):
                 entry = attrs(element)
                 if entry:
                     entry["element"] = local_name(element.tag)
@@ -150,16 +193,27 @@ def characterize(path: pathlib.Path, source_url: str, architecture_hint: str) ->
             300,
         )
 
+        asar_paths = [n for n in names if n.lower().endswith(".asar")]
+        asar_archives = [
+            {
+                "path": name,
+                "size_bytes": info_by_name[name].file_size,
+                "compressed_bytes": info_by_name[name].compress_size,
+                "sha256": sha256_zip_entry(zf, name),
+            }
+            for name in asar_paths
+        ]
+
         p7x_name = next((n for n in names if n.lower() == "appxsignature.p7x"), None)
         signature = {
             "present": p7x_name is not None,
             "entry": p7x_name,
-            "sha256": hashlib.sha256(zf.read(p7x_name)).hexdigest() if p7x_name else None,
+            "sha256": sha256_zip_entry(zf, p7x_name) if p7x_name else None,
             "verification": "not-performed-by-linux-static-rep",
         }
 
         return {
-            "schema": "cdr-derived-windows-msix-surface/v1",
+            "schema": "cdr-derived-windows-msix-surface/v2",
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "source": {
                 "url": source_url,
@@ -184,6 +238,10 @@ def characterize(path: pathlib.Path, source_url: str, architecture_hint: str) ->
                 "applications": applications,
                 "extensions": extensions,
             },
+            "runtime_topology": {
+                "asar_archives": asar_archives,
+                **resource_topology(names),
+            },
             "files": {
                 "extension_counts": dict(sorted(file_types.items())),
                 "executable_count": len(executable_paths),
@@ -197,8 +255,8 @@ def characterize(path: pathlib.Path, source_url: str, architecture_hint: str) ->
             },
             "claim_boundary": (
                 "Static package-derived evidence only. Presence identifies packaged surface; "
-                "absence does not prove runtime capability absence. No proprietary package bytes "
-                "or extracted source are included in this report."
+                "absence does not prove runtime capability absence. ASAR contents are hashed/topologized "
+                "without publishing extracted proprietary source. No proprietary package bytes are included."
             ),
         }
 
@@ -227,6 +285,9 @@ def main() -> int:
         "extension_count": len(result["manifest"]["extensions"]),
         "executable_count": result["files"]["executable_count"],
         "dll_count": result["files"]["dll_count"],
+        "asar_archives": result["runtime_topology"]["asar_archives"],
+        "asar_unpacked_node_modules": result["runtime_topology"]["asar_unpacked_node_modules"],
+        "bundled_plugin_ids": result["runtime_topology"]["bundled_plugin_ids"],
         "selected_markers": result["files"]["selected_markers"],
     }, indent=2, sort_keys=True))
     return 0
