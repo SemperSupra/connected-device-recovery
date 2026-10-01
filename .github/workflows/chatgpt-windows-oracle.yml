@@ -1,4 +1,4 @@
-name: Characterize official ChatGPT Windows package
+name: Characterize official ChatGPT Windows packages
 
 on:
   pull_request:
@@ -11,221 +11,148 @@ permissions:
 
 jobs:
   characterize:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            url: https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix
+          - arch: arm64
+            url: https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix
+
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       STORE_ID: 9PLM9XGG6VKS
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Discover Microsoft Store metadata
+      - name: Acquire current Store-signed MSIX directly from OpenAI
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $out = Join-Path $PWD 'out/chatgpt-windows'
-          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $arch = '\${{ matrix.arch }}'
+          $url = '\${{ matrix.url }}'
+          $out = Join-Path $PWD "out/chatgpt-windows-$arch"
+          $work = Join-Path $env:RUNNER_TEMP "chatgpt-windows-$arch"
+          $msix = Join-Path $work 'ChatGPT.msix'
+          $extract = Join-Path $work 'extract'
+          New-Item -ItemType Directory -Force -Path $out,$extract | Out-Null
 
-          $receipt = [ordered]@{
-            schema = 'cdr-chatgpt-windows-oracle/v1'
-            store_id = $env:STORE_ID
-            source = 'Microsoft Store via WinGet'
-            winget_present = $false
-            msstore_source_present = $false
-            show_status = 'NOT_RUN'
-            show_exit_code = $null
-            download_status = 'NOT_RUN'
-            download_exit_code = $null
-            package_payload_observed = $false
-            proprietary_bytes_published = $false
-          }
+          Invoke-WebRequest -Uri $url -OutFile $msix
+          $sha = (Get-FileHash -Algorithm SHA256 -Path $msix).Hash.ToLowerInvariant()
+          $size = (Get-Item $msix).Length
+          $sig = Get-AuthenticodeSignature -FilePath $msix
 
-          $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-          if (-not $winget) {
-            $receipt.show_status = 'WINGET_UNAVAILABLE'
-            $receipt | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 (Join-Path $out 'receipt.json')
-            exit 0
-          }
-
-          $receipt.winget_present = $true
-          (& winget.exe --version) | Set-Content -Encoding UTF8 (Join-Path $out 'winget-version.txt')
-          (& winget.exe source list) | Set-Content -Encoding UTF8 (Join-Path $out 'winget-sources.txt')
-          if ((Get-Content (Join-Path $out 'winget-sources.txt') -Raw) -match '(?m)^msstore\s') {
-            $receipt.msstore_source_present = $true
-          }
-
-          $show = & winget.exe show --id $env:STORE_ID --source msstore --accept-source-agreements --disable-interactivity 2>&1
-          $showCode = $LASTEXITCODE
-          $show | Set-Content -Encoding UTF8 (Join-Path $out 'winget-show.txt')
-          $receipt.show_exit_code = $showCode
-          $receipt.show_status = if ($showCode -eq 0) { 'PASS' } else { 'FAILED' }
-
-          $receipt | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 (Join-Path $out 'receipt.json')
-
-      - name: Attempt credential-free package acquisition and derive package evidence
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
           Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($msix, $extract)
 
-          $out = Join-Path $PWD 'out/chatgpt-windows'
-          $download = Join-Path $env:RUNNER_TEMP 'chatgpt-store-download'
-          $extract = Join-Path $env:RUNNER_TEMP 'chatgpt-store-extract'
-          New-Item -ItemType Directory -Force -Path $download,$extract | Out-Null
+          $manifestPath = Join-Path $extract 'AppxManifest.xml'
+          if (!(Test-Path $manifestPath)) { throw 'AppxManifest.xml missing from official MSIX.' }
+          [xml]$manifest = Get-Content $manifestPath -Raw
 
-          $receiptPath = Join-Path $out 'receipt.json'
-          $receipt = Get-Content $receiptPath -Raw | ConvertFrom-Json
+          $identity = $manifest.SelectSingleNode("//*[local-name()='Identity']")
+          if (-not $identity) { throw 'Package Identity missing from AppxManifest.xml.' }
 
-          if (-not $receipt.winget_present -or -not $receipt.msstore_source_present) {
-            $receipt.download_status = 'UNAVAILABLE_HOST_CAPABILITY'
-            $receipt | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 $receiptPath
-            exit 0
-          }
+          $caps = @($manifest.SelectNodes("//*[local-name()='Capability'] | //*[local-name()='DeviceCapability'] | //*[local-name()='CustomCapability']") |
+            ForEach-Object { [string]$_.Name } | Where-Object { $_ } | Sort-Object -Unique)
+          $protocols = @($manifest.SelectNodes("//*[local-name()='Protocol']") |
+            ForEach-Object { [string]$_.Name } | Where-Object { $_ } | Sort-Object -Unique)
+          $aliases = @($manifest.SelectNodes("//*[local-name()='ExecutionAlias']") |
+            ForEach-Object { [string]$_.Alias } | Where-Object { $_ } | Sort-Object -Unique)
+          $deps = @($manifest.SelectNodes("//*[local-name()='PackageDependency']") |
+            ForEach-Object { [string]$_.Name } | Where-Object { $_ } | Sort-Object -Unique)
 
-          $args = @(
-            'download',
-            '--id', $env:STORE_ID,
-            '--source', 'msstore',
-            '--architecture', 'x64',
-            '--download-directory', $download,
-            '--skip-license',
-            '--accept-package-agreements',
-            '--accept-source-agreements',
-            '--disable-interactivity'
-          )
-
-          & winget.exe @args *> (Join-Path $out 'winget-download.txt')
-          $downloadCode = $LASTEXITCODE
-          $receipt.download_exit_code = $downloadCode
-
-          $packages = @(Get-ChildItem -Path $download -File -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.Extension -match '^\.(msix|appx|msixbundle|appxbundle)$' })
-
-          if ($downloadCode -ne 0 -or $packages.Count -eq 0) {
-            $receipt.download_status = 'TYPED_UNAVAILABLE'
-            $receipt.package_payload_observed = $false
-            $receipt | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 $receiptPath
-            Remove-Item -Force -Recurse $download,$extract -ErrorAction SilentlyContinue
-            exit 0
-          }
-
-          $receipt.download_status = 'PASS'
-          $receipt.package_payload_observed = $true
-
-          $packageRecords = @()
-          $identityRecords = @()
-          $capabilities = New-Object System.Collections.Generic.HashSet[string]
-          $protocols = New-Object System.Collections.Generic.HashSet[string]
-          $fileTypes = New-Object System.Collections.Generic.HashSet[string]
-          $dependencies = New-Object System.Collections.Generic.HashSet[string]
+          $files = @(Get-ChildItem $extract -Recurse -File)
           $extensionCounts = @{}
-
-          function Expand-Package([string]$PackagePath, [string]$Destination) {
-            New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-            try {
-              [System.IO.Compression.ZipFile]::ExtractToDirectory($PackagePath, $Destination)
-              return $true
-            } catch {
-              return $false
-            }
-          }
-
-          foreach ($pkg in $packages) {
-            $sig = Get-AuthenticodeSignature -FilePath $pkg.FullName
-            $packageRecords += [ordered]@{
-              name = $pkg.Name
-              size_bytes = $pkg.Length
-              sha256 = (Get-FileHash -Algorithm SHA256 -Path $pkg.FullName).Hash.ToLowerInvariant()
-              signature_status = [string]$sig.Status
-              signer_subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { $null }
-              signer_thumbprint = if ($sig.SignerCertificate) { $sig.SignerCertificate.Thumbprint } else { $null }
-            }
-
-            $pkgRoot = Join-Path $extract ([guid]::NewGuid().ToString('N'))
-            if (-not (Expand-Package $pkg.FullName $pkgRoot)) { continue }
-
-            foreach ($nested in @(Get-ChildItem $pkgRoot -Recurse -File |
-              Where-Object { $_.Extension -match '^\.(msix|appx)$' })) {
-              $nestedRoot = Join-Path $extract ([guid]::NewGuid().ToString('N'))
-              [void](Expand-Package $nested.FullName $nestedRoot)
-            }
-          }
-
-          $manifestFiles = @(Get-ChildItem $extract -Recurse -File |
-            Where-Object { $_.Name -in @('AppxManifest.xml','AppxBundleManifest.xml') })
-
-          foreach ($manifestFile in $manifestFiles) {
-            try { [xml]$xml = Get-Content $manifestFile.FullName -Raw } catch { continue }
-
-            $identity = $xml.SelectSingleNode("//*[local-name()='Identity']")
-            if ($identity) {
-              $identityRecords += [ordered]@{
-                name = [string]$identity.Name
-                publisher = [string]$identity.Publisher
-                version = [string]$identity.Version
-                processor_architecture = [string]$identity.ProcessorArchitecture
-              }
-            }
-
-            foreach ($node in $xml.SelectNodes("//*[local-name()='Capability'] | //*[local-name()='DeviceCapability'] | //*[local-name()='CustomCapability']")) {
-              if ($node.Name) { [void]$capabilities.Add([string]$node.Name) }
-            }
-
-            foreach ($node in $xml.SelectNodes("//*[local-name()='PackageDependency']")) {
-              if ($node.Name) { [void]$dependencies.Add([string]$node.Name) }
-            }
-
-            foreach ($node in $xml.SelectNodes("//*[local-name()='Protocol']")) {
-              if ($node.Name) { [void]$protocols.Add([string]$node.Name) }
-            }
-
-            foreach ($node in $xml.SelectNodes("//*[local-name()='FileType']")) {
-              if ($node.'#text') { [void]$fileTypes.Add([string]$node.'#text') }
-            }
-          }
-
-          foreach ($file in @(Get-ChildItem $extract -Recurse -File)) {
+          foreach ($file in $files) {
             $ext = if ($file.Extension) { $file.Extension.ToLowerInvariant() } else { '<none>' }
             if (-not $extensionCounts.ContainsKey($ext)) { $extensionCounts[$ext] = 0 }
             $extensionCounts[$ext]++
           }
 
-          $interesting = @(Get-ChildItem $extract -Recurse -File |
-            Where-Object { $_.Extension -match '^\.(exe|dll|winmd|node|pak|wasm|js)$' } |
-            ForEach-Object { $_.Name } |
+          $interesting = @($files |
+            Where-Object {
+              $_.Extension -match '^\.(exe|dll|node|pak|wasm|js|asar|json|toml|yaml|yml|ps1|cmd|bat)$' -or
+              $_.Name -match '(?i)(codex|chatgpt|browser|playwright|cua|computer|plugin|skill|mcp|sandbox|remote|hid|pty)'
+            } |
+            ForEach-Object { $_.FullName.Substring($extract.Length + 1).Replace('\','/') } |
             Sort-Object -Unique |
-            Select-Object -First 500)
+            Select-Object -First 2000)
 
-          $derived = [ordered]@{
-            schema = 'cdr-chatgpt-windows-derived-package/v1'
-            store_id = $env:STORE_ID
-            packages = $packageRecords
-            identities = $identityRecords
-            capabilities = @($capabilities | Sort-Object)
-            dependencies = @($dependencies | Sort-Object)
-            protocols = @($protocols | Sort-Object)
-            file_types = @($fileTypes | Sort-Object)
-            extension_counts = $extensionCounts
-            interesting_binary_names = $interesting
-            claim_boundary = 'Derived package evidence only; package bytes/source are proprietary and are not published.'
+          $executables = @()
+          foreach ($file in $files | Where-Object { $_.Extension -match '^\.(exe|dll|node)$' } | Select-Object -First 600) {
+            $rel = $file.FullName.Substring($extract.Length + 1).Replace('\','/')
+            $record = [ordered]@{
+              path = $rel
+              size_bytes = $file.Length
+              sha256 = (Get-FileHash -Algorithm SHA256 -Path $file.FullName).Hash.ToLowerInvariant()
+            }
+            try {
+              $fsig = Get-AuthenticodeSignature -FilePath $file.FullName
+              $record.signature_status = [string]$fsig.Status
+              $record.signer_subject = if ($fsig.SignerCertificate) { $fsig.SignerCertificate.Subject } else { $null }
+            } catch {
+              $record.signature_status = 'ERROR'
+            }
+            $executables += $record
           }
-          $derived | ConvertTo-Json -Depth 12 | Set-Content -Encoding UTF8 (Join-Path $out 'derived-package.json')
 
-          $receipt | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 $receiptPath
+          $blockMapPath = Join-Path $extract 'AppxBlockMap.xml'
+          $derived = [ordered]@{
+            schema = 'cdr-chatgpt-windows-derived-package/v2'
+            evidence_date = '2026-10-01'
+            source_url = $url
+            store_id = $env:STORE_ID
+            requested_architecture = $arch
+            package = [ordered]@{
+              sha256 = $sha
+              size_bytes = $size
+              signature_status = [string]$sig.Status
+              signer_subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { $null }
+              signer_thumbprint = if ($sig.SignerCertificate) { $sig.SignerCertificate.Thumbprint } else { $null }
+            }
+            identity = [ordered]@{
+              name = [string]$identity.Name
+              publisher = [string]$identity.Publisher
+              version = [string]$identity.Version
+              processor_architecture = [string]$identity.ProcessorArchitecture
+              resource_id = [string]$identity.ResourceId
+            }
+            capabilities = $caps
+            protocols = $protocols
+            execution_aliases = $aliases
+            dependencies = $deps
+            file_count = $files.Count
+            extension_counts = $extensionCounts
+            interesting_paths = $interesting
+            executable_inventory = $executables
+            manifest_sha256 = (Get-FileHash -Algorithm SHA256 -Path $manifestPath).Hash.ToLowerInvariant()
+            block_map_sha256 = if (Test-Path $blockMapPath) { (Get-FileHash -Algorithm SHA256 -Path $blockMapPath).Hash.ToLowerInvariant() } else { $null }
+            proprietary_bytes_published = $false
+            claim_boundary = 'Derived package metadata only. MSIX and extracted proprietary payloads remain transient and are not uploaded.'
+          }
 
-          Remove-Item -Force -Recurse $download,$extract -ErrorAction SilentlyContinue
+          $derived | ConvertTo-Json -Depth 20 | Set-Content -Encoding UTF8 (Join-Path $out 'derived-package.json')
+          Remove-Item -Force -Recurse $work -ErrorAction SilentlyContinue
 
-      - name: Prove no proprietary package payload is published
+      - name: Prove proprietary package payload is absent
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $bad = @(Get-ChildItem out/chatgpt-windows -Recurse -File |
-            Where-Object { $_.Extension -match '^\.(msix|appx|msixbundle|appxbundle)$' })
-          if ($bad.Count -ne 0) { throw 'Proprietary package payload escaped into publish tree.' }
+          $out = Join-Path $PWD 'out/chatgpt-windows-\${{ matrix.arch }}'
+          $bad = @(Get-ChildItem $out -Recurse -File |
+            Where-Object { $_.Extension -match '^\.(msix|appx|msixbundle|appxbundle|exe|dll|node|asar)$' })
+          if ($bad.Count -ne 0) {
+            $bad | ForEach-Object { Write-Host $_.FullName }
+            throw 'Proprietary payload escaped into publish tree.'
+          }
 
-      - name: Upload sanitized oracle evidence
+      - name: Upload sanitized Windows oracle evidence
         uses: actions/upload-artifact@v4
         with:
-          name: chatgpt-windows-derived-oracle
-          path: out/chatgpt-windows/
+          name: chatgpt-windows-\${{ matrix.arch }}-derived-oracle
+          path: out/chatgpt-windows-\${{ matrix.arch }}/
           if-no-files-found: error
           retention-days: 7
