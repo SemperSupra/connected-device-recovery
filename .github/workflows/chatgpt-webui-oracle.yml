@@ -1,0 +1,169 @@
+name: Characterize ChatGPT WebUI and guest surfaces
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/chatgpt-webui-oracle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guest-and-static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe unauthenticated API and product surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/chatgpt-webui
+          python3 - <<'PY'
+          import hashlib,json,urllib.error,urllib.parse,urllib.request,pathlib
+
+          probes=[
+            {"id":"oidc-discovery","method":"GET","url":"https://auth.openai.com/.well-known/openid-configuration","plane":"public-auth-metadata"},
+            {"id":"api-models","method":"GET","url":"https://api.openai.com/v1/models","plane":"documented-api"},
+            {"id":"api-responses","method":"POST","url":"https://api.openai.com/v1/responses","plane":"documented-api","json":{"model":"gpt-6-astra","input":"guest capability probe","store":False,"stream":False}},
+            {"id":"chatgpt-home","method":"GET","url":"https://chatgpt.com/","plane":"webui"},
+            {"id":"chatgpt-anon-me","method":"GET","url":"https://chatgpt.com/backend-anon/me","plane":"webui-observed"},
+            {"id":"chatgpt-anon-models","method":"GET","url":"https://chatgpt.com/backend-anon/models","plane":"webui-observed"},
+            {"id":"chatgpt-anon-requirements","method":"POST","url":"https://chatgpt.com/backend-anon/sentinel/chat-requirements","plane":"webui-observed","json":{}},
+          ]
+
+          safe_headers={"content-type","content-length","location","server","access-control-allow-origin","openai-version","x-request-id","cf-mitigated"}
+          safe_value_keys={"detail","message","type","code","status","authenticated","requires_auth"}
+
+          def clean_url(value):
+            try:
+              p=urllib.parse.urlsplit(value)
+              return urllib.parse.urlunsplit((p.scheme,p.netloc,p.path,"",""))
+            except Exception:
+              return None
+
+          def shape(v,key=None,depth=0):
+            if depth>5: return "<depth-limit>"
+            if isinstance(v,dict):
+              return {str(k):shape(x,str(k),depth+1) for k,x in list(v.items())[:200]}
+            if isinstance(v,list):
+              return {"array_length":len(v),"sample":[shape(x,key,depth+1) for x in v[:20]]}
+            if isinstance(v,(bool,int,float)) or v is None: return v
+            if isinstance(v,str):
+              if key in safe_value_keys and len(v)<=200: return v
+              return f"<string:{len(v)}>"
+            return f"<{type(v).__name__}>"
+
+          opener=urllib.request.build_opener()
+          results=[]
+          for p in probes:
+            headers={"User-Agent":"SemperSupra-CDR-GuestProbe/1.0","Accept":"application/json,text/html;q=0.9,*/*;q=0.5"}
+            data=None
+            if "json" in p:
+              data=json.dumps(p["json"],separators=(",",":")).encode()
+              headers["Content-Type"]="application/json"
+            req=urllib.request.Request(p["url"],data=data,headers=headers,method=p["method"])
+            status=None; final=p["url"]; hdrs={}; body=b""; error=None
+            try:
+              with opener.open(req,timeout=20) as r:
+                status=r.status; final=r.geturl(); hdrs=dict(r.headers.items()); body=r.read(2_000_000)
+            except urllib.error.HTTPError as e:
+              status=e.code; final=e.geturl(); hdrs=dict(e.headers.items())
+              try: body=e.read(2_000_000)
+              except Exception: body=b""
+            except Exception as e:
+              error=f"{type(e).__name__}: {e}"
+
+            ctype=next((v for k,v in hdrs.items() if k.lower()=="content-type"),"")
+            body_shape=None
+            if body and ("json" in ctype.lower() or body.lstrip().startswith((b"{",b"["))):
+              try: body_shape=shape(json.loads(body.decode("utf-8","replace")))
+              except Exception: pass
+
+            sh={}
+            for k,v in hdrs.items():
+              lk=k.lower()
+              if lk not in safe_headers: continue
+              if lk=="location": v=clean_url(v) or "<unparseable>"
+              elif len(v)>240: v=f"<string:{len(v)}>"
+              sh[lk]=v
+
+            results.append({
+              "id":p["id"],"plane":p["plane"],"method":p["method"],
+              "url":clean_url(p["url"]),"status":status,"final_url":clean_url(final),
+              "headers":sh,"body_bytes":len(body),
+              "body_sha256":hashlib.sha256(body).hexdigest() if body else None,
+              "body_shape":body_shape,"transport_error":error
+            })
+
+          pathlib.Path("out/chatgpt-webui/guest-probes.json").write_text(json.dumps({
+            "schema":"cdr-openai-guest-probes/v1",
+            "authenticated":False,
+            "cookie_jar_used":False,
+            "results":results,
+            "claim_boundary":"Low-volume unauthenticated observations only; status/shape does not make a first-party route a supported third-party API."
+          },indent=2,sort_keys=True)+"\n")
+          PY
+
+      - name: Census logged-out WebUI static/runtime metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,re,urllib.parse,urllib.request,pathlib
+          root="https://chatgpt.com/"
+          req=urllib.request.Request(root,headers={"User-Agent":"Mozilla/5.0 SemperSupra-CDR/1.0"})
+          try:
+            with urllib.request.urlopen(req,timeout=30) as r:
+              html=r.read(4_000_000)
+              final=r.geturl()
+              ctype=r.headers.get("content-type")
+          except Exception as e:
+            pathlib.Path("out/chatgpt-webui/static-census.json").write_text(json.dumps({
+              "schema":"cdr-chatgpt-webui-static/v1","status":"TYPED_UNAVAILABLE","error":f"{type(e).__name__}: {e}"
+            },indent=2)+"\n")
+            raise SystemExit(0)
+
+          text=html.decode("utf-8","replace")
+          raw_links=set(re.findall(r"(?:src|href)=['\"]([^'\"]+)['\"]",text,re.I))
+          links=[]
+          for x in raw_links:
+            u=urllib.parse.urljoin(final,x)
+            p=urllib.parse.urlsplit(u)
+            if p.scheme in {"http","https"} and p.netloc.endswith(("chatgpt.com","oaistatic.com")):
+              links.append(urllib.parse.urlunsplit((p.scheme,p.netloc,p.path,"","")))
+
+          assets=[]
+          terms=["voice","codex","work","project","memory","plugin","connector","image","file","canvas","task","browser","computer","realtime","websocket","sse"]
+          for u in sorted(set(links))[:120]:
+            rec={"url":u}
+            try:
+              rq=urllib.request.Request(u,headers={"User-Agent":"Mozilla/5.0 SemperSupra-CDR/1.0"})
+              with urllib.request.urlopen(rq,timeout=15) as r:
+                body=r.read(5_000_000)
+                rec.update({"status":r.status,"bytes":len(body),"sha256":hashlib.sha256(body).hexdigest(),"content_type":r.headers.get("content-type")})
+                low=body.decode("utf-8","ignore").lower()
+                rec["capability_terms"]=[t for t in terms if t in low]
+            except Exception as e:
+              rec["error"]=type(e).__name__
+            assets.append(rec)
+
+          pathlib.Path("out/chatgpt-webui/static-census.json").write_text(json.dumps({
+            "schema":"cdr-chatgpt-webui-static/v1",
+            "status":"PASS","final_url":urllib.parse.urlunsplit((*urllib.parse.urlsplit(final)[:3],"","")),
+            "html_bytes":len(html),"html_sha256":hashlib.sha256(html).hexdigest(),
+            "content_type":ctype,"asset_count_seen":len(set(links)),"assets":assets,
+            "source_bundles_published":False,
+            "claim_boundary":"Hashes, sizes and bounded term presence only; no proprietary JS/CSS source is published."
+          },indent=2,sort_keys=True)+"\n")
+          PY
+
+      - name: Upload public-safe WebUI evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-webui-derived-oracle
+          path: out/chatgpt-webui/
+          if-no-files-found: error
+          retention-days: 7
