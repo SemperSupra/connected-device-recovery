@@ -1,0 +1,229 @@
+name: Characterize official ChatGPT Windows package
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/chatgpt-windows-oracle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  characterize:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      STORE_ID: 9NT1R1C2HH7J
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Discover Microsoft Store metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $PWD 'out/chatgpt-windows'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          $receipt = [ordered]@{
+            schema = 'cdr-chatgpt-windows-oracle/v1'
+            store_id = $env:STORE_ID
+            source = 'Microsoft Store via WinGet'
+            winget_present = $false
+            msstore_source_present = $false
+            show_status = 'NOT_RUN'
+            download_status = 'NOT_RUN'
+            package_payload_observed = $false
+            proprietary_bytes_published = $false
+          }
+
+          $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+          if (-not $winget) {
+            $receipt.show_status = 'WINGET_UNAVAILABLE'
+            $receipt | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 (Join-Path $out 'receipt.json')
+            exit 0
+          }
+
+          $receipt.winget_present = $true
+          (& winget.exe --version) | Set-Content -Encoding UTF8 (Join-Path $out 'winget-version.txt')
+          (& winget.exe source list) | Set-Content -Encoding UTF8 (Join-Path $out 'winget-sources.txt')
+          if ((Get-Content (Join-Path $out 'winget-sources.txt') -Raw) -match '(?m)^msstore\s') {
+            $receipt.msstore_source_present = $true
+          }
+
+          $show = & winget.exe show --id $env:STORE_ID --source msstore --accept-source-agreements --disable-interactivity 2>&1
+          $showCode = $LASTEXITCODE
+          $show | Set-Content -Encoding UTF8 (Join-Path $out 'winget-show.txt')
+          $receipt.show_exit_code = $showCode
+          $receipt.show_status = if ($showCode -eq 0) { 'PASS' } else { 'FAILED' }
+
+          $receipt | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 (Join-Path $out 'receipt.json')
+
+      - name: Attempt credential-free package acquisition and derive package evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+          $out = Join-Path $PWD 'out/chatgpt-windows'
+          $download = Join-Path $env:RUNNER_TEMP 'chatgpt-store-download'
+          $extract = Join-Path $env:RUNNER_TEMP 'chatgpt-store-extract'
+          New-Item -ItemType Directory -Force -Path $download,$extract | Out-Null
+
+          $receiptPath = Join-Path $out 'receipt.json'
+          $receipt = Get-Content $receiptPath -Raw | ConvertFrom-Json
+
+          if (-not $receipt.winget_present -or -not $receipt.msstore_source_present) {
+            $receipt.download_status = 'UNAVAILABLE_HOST_CAPABILITY'
+            $receipt | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 $receiptPath
+            exit 0
+          }
+
+          $args = @(
+            'download',
+            '--id', $env:STORE_ID,
+            '--source', 'msstore',
+            '--architecture', 'x64',
+            '--download-directory', $download,
+            '--skip-license',
+            '--accept-package-agreements',
+            '--accept-source-agreements',
+            '--disable-interactivity'
+          )
+
+          & winget.exe @args *> (Join-Path $out 'winget-download.txt')
+          $downloadCode = $LASTEXITCODE
+          $receipt.download_exit_code = $downloadCode
+
+          $packages = @(Get-ChildItem -Path $download -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -match '^\.(msix|appx|msixbundle|appxbundle)$' })
+
+          if ($downloadCode -ne 0 -or $packages.Count -eq 0) {
+            $receipt.download_status = 'TYPED_UNAVAILABLE'
+            $receipt.package_payload_observed = $false
+            $receipt | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 $receiptPath
+            Remove-Item -Force -Recurse $download,$extract -ErrorAction SilentlyContinue
+            exit 0
+          }
+
+          $receipt.download_status = 'PASS'
+          $receipt.package_payload_observed = $true
+
+          $packageRecords = @()
+          $identityRecords = @()
+          $capabilities = New-Object System.Collections.Generic.HashSet[string]
+          $protocols = New-Object System.Collections.Generic.HashSet[string]
+          $fileTypes = New-Object System.Collections.Generic.HashSet[string]
+          $dependencies = New-Object System.Collections.Generic.HashSet[string]
+          $extensionCounts = @{}
+
+          function Expand-Package([string]$PackagePath, [string]$Destination) {
+            New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+            try {
+              [System.IO.Compression.ZipFile]::ExtractToDirectory($PackagePath, $Destination)
+              return $true
+            } catch {
+              return $false
+            }
+          }
+
+          foreach ($pkg in $packages) {
+            $sig = Get-AuthenticodeSignature -FilePath $pkg.FullName
+            $packageRecords += [ordered]@{
+              name = $pkg.Name
+              size_bytes = $pkg.Length
+              sha256 = (Get-FileHash -Algorithm SHA256 -Path $pkg.FullName).Hash.ToLowerInvariant()
+              signature_status = [string]$sig.Status
+              signer_subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { $null }
+              signer_thumbprint = if ($sig.SignerCertificate) { $sig.SignerCertificate.Thumbprint } else { $null }
+            }
+
+            $pkgRoot = Join-Path $extract ([guid]::NewGuid().ToString('N'))
+            if (-not (Expand-Package $pkg.FullName $pkgRoot)) { continue }
+
+            foreach ($nested in @(Get-ChildItem $pkgRoot -Recurse -File |
+              Where-Object { $_.Extension -match '^\.(msix|appx)$' })) {
+              $nestedRoot = Join-Path $extract ([guid]::NewGuid().ToString('N'))
+              [void](Expand-Package $nested.FullName $nestedRoot)
+            }
+          }
+
+          $manifestFiles = @(Get-ChildItem $extract -Recurse -File |
+            Where-Object { $_.Name -in @('AppxManifest.xml','AppxBundleManifest.xml') })
+
+          foreach ($manifestFile in $manifestFiles) {
+            try { [xml]$xml = Get-Content $manifestFile.FullName -Raw } catch { continue }
+
+            $identity = $xml.SelectSingleNode("//*[local-name()='Identity']")
+            if ($identity) {
+              $identityRecords += [ordered]@{
+                name = [string]$identity.Name
+                publisher = [string]$identity.Publisher
+                version = [string]$identity.Version
+                processor_architecture = [string]$identity.ProcessorArchitecture
+              }
+            }
+
+            foreach ($node in $xml.SelectNodes("//*[local-name()='Capability'] | //*[local-name()='DeviceCapability'] | //*[local-name()='CustomCapability']")) {
+              if ($node.Name) { [void]$capabilities.Add([string]$node.Name) }
+            }
+
+            foreach ($node in $xml.SelectNodes("//*[local-name()='PackageDependency']")) {
+              if ($node.Name) { [void]$dependencies.Add([string]$node.Name) }
+            }
+
+            foreach ($node in $xml.SelectNodes("//*[local-name()='Protocol']")) {
+              if ($node.Name) { [void]$protocols.Add([string]$node.Name) }
+            }
+
+            foreach ($node in $xml.SelectNodes("//*[local-name()='FileType']")) {
+              if ($node.'#text') { [void]$fileTypes.Add([string]$node.'#text') }
+            }
+          }
+
+          foreach ($file in @(Get-ChildItem $extract -Recurse -File)) {
+            $ext = if ($file.Extension) { $file.Extension.ToLowerInvariant() } else { '<none>' }
+            if (-not $extensionCounts.ContainsKey($ext)) { $extensionCounts[$ext] = 0 }
+            $extensionCounts[$ext]++
+          }
+
+          $interesting = @(Get-ChildItem $extract -Recurse -File |
+            Where-Object { $_.Extension -match '^\.(exe|dll|winmd|node|pak|wasm|js)$' } |
+            ForEach-Object { $_.Name } |
+            Sort-Object -Unique |
+            Select-Object -First 500)
+
+          $derived = [ordered]@{
+            schema = 'cdr-chatgpt-windows-derived-package/v1'
+            store_id = $env:STORE_ID
+            packages = $packageRecords
+            identities = $identityRecords
+            capabilities = @($capabilities | Sort-Object)
+            dependencies = @($dependencies | Sort-Object)
+            protocols = @($protocols | Sort-Object)
+            file_types = @($fileTypes | Sort-Object)
+            extension_counts = $extensionCounts
+            interesting_binary_names = $interesting
+            claim_boundary = 'Derived package evidence only; package bytes/source are proprietary and are not published.'
+          }
+          $derived | ConvertTo-Json -Depth 12 | Set-Content -Encoding UTF8 (Join-Path $out 'derived-package.json')
+
+          $receipt | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 $receiptPath
+
+          Remove-Item -Force -Recurse $download,$extract -ErrorAction SilentlyContinue
+
+      - name: Prove no proprietary package payload is published
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bad = @(Get-ChildItem out/chatgpt-windows -Recurse -File |
+            Where-Object { $_.Extension -match '^\.(msix|appx|msixbundle|appxbundle)$' })
+          if ($bad.Count -ne 0) { throw 'Proprietary package payload escaped into publish tree.' }
+
+      - name: Upload sanitized oracle evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-windows-derived-oracle
+          path: out/chatgpt-windows/
+          if-no-files-found: error
+          retention-days: 7
