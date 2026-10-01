@@ -1,4 +1,5 @@
 name: Characterize official ChatGPT Linux packages
+# deep-runtime-census rep 2026-10-01
 
 on:
   pull_request:
