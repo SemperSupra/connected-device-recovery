@@ -39,13 +39,13 @@ jobs:
                 text=r.read().decode("utf-8","replace")
             except Exception:
               continue
-            links=sorted(set(re.findall(r'https://persistent\.oaistatic\.com/[^\s\)>"\']+\.dmg(?:\?[^\s\)>"\']*)?',text)))
-            found[label]={"source_url":url,"dmg_urls":links}
-          all_links=sorted(set(u for x in found.values() for u in x["dmg_urls"]))
+            links=sorted(set(re.findall(r'https://persistent\.oaistatic\.com/[^\s\)>"\']+',text)))
+            found[label]={"source_url":url,"candidate_urls":links}
+          all_links=sorted(set(u for x in found.values() for u in x["candidate_urls"]))
           pathlib.Path("out/chatgpt-macos/discovery.json").write_text(
             json.dumps({"schema":"cdr-chatgpt-macos-discovery/v1","sources":found,"all_dmg_urls":all_links},indent=2,sort_keys=True)+"\n")
           if not all_links:
-            raise SystemExit("no official macOS DMG URLs discovered")
+            raise SystemExit("no official macOS download candidates discovered")
           (work/"dmg-urls.txt").write_text("\n".join(all_links)+"\n")
           PY
 
@@ -64,7 +64,11 @@ jobs:
             size="$(stat -f %z "$dmg")"
 
             attach="$WORK/attach-$index.txt"
-            hdiutil attach -nobrowse -readonly "$dmg" | tee "$attach"
+            if ! hdiutil attach -nobrowse -readonly "$dmg" | tee "$attach"; then
+              echo "candidate_not_mountable=$url" >> out/chatgpt-macos/skipped-candidates.txt
+              rm -f "$dmg"
+              continue
+            fi
             volume="$(awk -F '\t' '$3 ~ /^\/Volumes\// {print $3}' "$attach" | tail -n1)"
             if [ -z "$volume" ]; then
               echo "mount point not found" >&2
