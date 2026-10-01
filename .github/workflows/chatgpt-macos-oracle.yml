@@ -1,4 +1,5 @@
 name: Characterize official ChatGPT macOS applications
+# deep-runtime-census rep 2026-10-01
 
 on:
   pull_request:
