@@ -127,7 +127,7 @@ jobs:
             raise SystemExit(0)
 
           text=html.decode("utf-8","replace")
-          raw_links=set(re.findall(r'(?:src|href)=["\\']([^"\\']+)["\\']',text,re.I))
+          raw_links=set(re.findall(r"(?:src|href)=['\"]([^'\"]+)['\"]",text,re.I))
           links=[]
           for x in raw_links:
             u=urllib.parse.urljoin(final,x)
