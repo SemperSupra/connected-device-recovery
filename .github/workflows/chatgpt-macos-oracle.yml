@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/chatgpt-macos-oracle.yml'
+      - 'tools/characterize_desktop_bundle.py'
   workflow_dispatch:
 
 permissions:
@@ -86,6 +87,15 @@ jobs:
             codesign -dv --verbose=4 "$app" > "$WORK/codesign-$index.txt" 2>&1 || true
             codesign -d --entitlements :- "$app" > "$WORK/entitlements-$index.plist" 2>/dev/null || true
             spctl -a -vv "$app" > "$WORK/spctl-$index.txt" 2>&1 || true
+
+            asar="$(find "$app" -type f -name 'app.asar' -print -quit || true)"
+            if [ -n "$asar" ]; then
+              asar_out="$app/Contents/Resources/__app_asar_extracted"
+              npx --yes @electron/asar@4.3.1 extract "$asar" "$asar_out"
+            fi
+
+            census="out/chatgpt-macos/components/app-$index"
+            python3 tools/characterize_desktop_bundle.py "$app" "$census" --label "macos-app-$index" --platform macos
 
             python3 - "$app" "$url" "$sha" "$size" "$WORK/codesign-$index.txt" "$WORK/entitlements-$index.plist" "$WORK/spctl-$index.txt" >> out/chatgpt-macos/apps.ndjson <<'PY'
           import collections,json,pathlib,plistlib,subprocess,sys
