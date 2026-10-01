@@ -66,7 +66,7 @@ jobs:
           arch = os.environ["ARCH"]
           p = Path(f"out/chatgpt-windows-{arch}-derived.json")
           data = json.loads(p.read_text(encoding="utf-8"))
-          assert data["schema"] == "cdr-derived-windows-msix-surface/v1"
+          assert data["schema"] == "cdr-derived-windows-msix-surface/v2"
           assert data["package"]["sha256"]
           assert data["package"]["identity"]
           print(json.dumps({
@@ -82,6 +82,7 @@ jobs:
               "executable_count": data["files"]["executable_count"],
               "dll_count": data["files"]["dll_count"],
               "executables": data["files"]["executables"],
+              "runtime_topology": data["runtime_topology"],
               "selected_markers": data["files"]["selected_markers"],
           }, indent=2))
           PY
@@ -99,3 +100,57 @@ jobs:
           path: out/chatgpt-windows-${{ matrix.architecture }}-derived.json
           if-no-files-found: error
           retention-days: 7
+
+  verify-package-signature:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            source_url: https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix
+          - architecture: arm64
+            source_url: https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - name: Acquire official OpenAI Store-signed MSIX
+        shell: pwsh
+        env:
+          SOURCE_URL: ${{ matrix.source_url }}
+          ARCH: ${{ matrix.architecture }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP "ChatGPT-$env:ARCH.msix"
+          Invoke-WebRequest -Uri $env:SOURCE_URL -OutFile $path -UseBasicParsing
+          if (!(Test-Path $path) -or (Get-Item $path).Length -eq 0) {
+            throw "MSIX acquisition failed"
+          }
+          (Get-FileHash $path -Algorithm SHA256) | Format-List
+
+      - name: Verify Store package signature
+        shell: pwsh
+        env:
+          ARCH: ${{ matrix.architecture }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP "ChatGPT-$env:ARCH.msix"
+          $signtool = Get-ChildItem "$env:ProgramFiles(x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (!$signtool) {
+            throw "signtool.exe not found on windows-2025 runner"
+          }
+
+          & $signtool.FullName verify /pa /v $path
+          if ($LASTEXITCODE -ne 0) {
+            throw "signtool verification failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Delete proprietary MSIX
+        if: always()
+        shell: pwsh
+        env:
+          ARCH: ${{ matrix.architecture }}
+        run: |
+          Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:RUNNER_TEMP "ChatGPT-$env:ARCH.msix")
