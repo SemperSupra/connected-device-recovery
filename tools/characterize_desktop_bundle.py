@@ -110,7 +110,7 @@ def main():
     root=pathlib.Path(args.root).resolve(); out=pathlib.Path(args.output_dir)
     out.mkdir(parents=True,exist_ok=True)
 
-    packages=[]; plugins=[]; mcps=[]; playwright=[]; natives=[]; executables=[]; licenses=[]; asars=[]
+    packages=[]; plugins=[]; mcps=[]; playwright=[]; natives=[]; executables=[]; licenses=[]; asars=[]\n    skills=[]; hooks=[]; app_maps=[]; marketplaces=[]; extension_manifests=[]; component_executables=[]
     components=collections.defaultdict(list)
     inventory_path=out/'files.ndjson.gz'
 
@@ -133,6 +133,45 @@ def main():
                 obj=read_json(p); plugins.append({'path':rel,'sha256':digest,'metadata':safe_subset(obj,SAFE_PLUGIN_KEYS)})
             if low=='.mcp.json' or low.endswith('.mcp.json'):
                 obj=read_json(p); mcps.append({'path':rel,'sha256':digest,'metadata':normalize_mcp(obj)})
+            if low=='skill.md':
+                text=p.read_text(errors='replace')
+                frontmatter={}
+                if text.startswith('---'):
+                    parts=text.split('---',2)
+                    if len(parts)>=3:
+                        for line in parts[1].splitlines():
+                            if ':' in line:
+                                k,v=line.split(':',1)
+                                if k.strip() in {'name','description','version'}:
+                                    frontmatter[k.strip()]=v.strip()[:500]
+                skills.append({'path':rel,'size':size,'sha256':digest,'frontmatter':frontmatter})
+            if low=='hooks.json' or ('/hooks/' in '/'+rel.lower() and low.endswith('.json')):
+                obj=read_json(p)
+                event_names=[]
+                handler_types=[]
+                if isinstance(obj,dict):
+                    h=obj.get('hooks',obj)
+                    if isinstance(h,dict):
+                        event_names=sorted(str(k) for k in h.keys())
+                        def walk(v):
+                            if isinstance(v,dict):
+                                if isinstance(v.get('type'),str): handler_types.append(v['type'])
+                                for x in v.values(): walk(x)
+                            elif isinstance(v,list):
+                                for x in v: walk(x)
+                        walk(h)
+                hooks.append({'path':rel,'sha256':digest,'keys':sorted(obj.keys()) if isinstance(obj,dict) else [],
+                              'events':event_names,'handler_types':sorted(set(handler_types))})
+            if low in {'.app.json','app.json'} and ('plugin' in rel.lower() or '/resources/' in '/'+rel.lower()):
+                obj=read_json(p)
+                app_maps.append({'path':rel,'sha256':digest,'metadata':safe_subset(obj,('apps','id','name','version'))})
+            if low=='marketplace.json':
+                obj=read_json(p)
+                marketplaces.append({'path':rel,'sha256':digest,'metadata':safe_subset(obj,('name','version','plugins'))})
+            if low=='manifest.json' and any(x in rel.lower() for x in ('extension','chrome','browser')):
+                obj=read_json(p)
+                extension_manifests.append({'path':rel,'sha256':digest,
+                    'metadata':safe_subset(obj,('name','version','manifest_version','permissions','host_permissions','background','content_scripts','externally_connectable'))})
             if low=='browsers.json' and 'playwright' in rel.lower():
                 obj=read_json(p); rows=[]
                 if isinstance(obj,dict) and isinstance(obj.get('browsers'),list):
@@ -144,6 +183,13 @@ def main():
                 info=run(['file','-b',str(p)])
                 deps=run(['otool','-L',str(p)]) if args.platform=='macos' else run(['ldd',str(p)])
                 natives.append({'path':rel,'size':size,'sha256':digest,'file':info,'dependencies':deps})
+            if os.access(p,os.X_OK) and any(marker in ('/'+rel.lower()) for marker in (
+                '/resources/cua_node/','/resources/native/','/resources/plugins/','/resources/codex','/app.asar.unpacked/')):
+                component_executables.append({
+                    'path':rel,'size':size,'sha256':digest,
+                    'file':run(['file','-b',str(p)]),
+                    'dependencies': run(['otool','-L',str(p)]) if args.platform=='macos' else run(['ldd',str(p)])
+                })
             if low.startswith('license') or low in {'copying','notice','third_party_licenses','third-party-licenses.txt'}:
                 licenses.append({'path':rel,'size':size,'sha256':digest})
             if low.endswith('.asar'):
@@ -159,14 +205,14 @@ def main():
         'label':args.label,'platform':args.platform,'root_name':root.name,
         'component_digests':{k:component_digest(v) for k,v in sorted(components.items())},
         'package_manifest_count':len(packages),'plugin_manifest_count':len(plugins),
-        'mcp_manifest_count':len(mcps),'native_module_count':len(natives),
+        'mcp_manifest_count':len(mcps),'native_module_count':len(natives),\n        'skill_count':len(skills),'hook_manifest_count':len(hooks),'app_map_count':len(app_maps),\n        'marketplace_manifest_count':len(marketplaces),'extension_manifest_count':len(extension_manifests),\n        'component_executable_count':len(component_executables),
         'license_file_count':len(licenses),'asar_count':len(asars),
         'claim_boundary':'Full path/hash/component census plus normalized metadata. Proprietary source bodies and opaque manifest payloads are not published.'
     }
     docs={
         'summary.json':summary,'packages.json':packages,'plugins.json':plugins,'mcp.json':mcps,
         'playwright.json':playwright,'native-modules.json':natives,'executables.json':executables,
-        'licenses.json':licenses,'asar-containers.json':asars,
+        'licenses.json':licenses,'asar-containers.json':asars,\n        'skills.json':skills,'hooks.json':hooks,'app-maps.json':app_maps,\n        'marketplaces.json':marketplaces,'browser-extension-manifests.json':extension_manifests,\n        'component-executables.json':component_executables,
     }
     for name,obj in docs.items():
         (out/name).write_text(json.dumps(obj,indent=2,sort_keys=True)+'\\n')
