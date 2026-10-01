@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/chatgpt-linux-oracle.yml'
+      - 'tools/characterize_desktop_bundle.py'
   workflow_dispatch:
 
 permissions:
@@ -91,6 +92,15 @@ jobs:
                 (cd "$root" && rpm2cpio "$path" | cpio -idmu --quiet) || true
                 ;;
             esac
+
+            asar="$(find "$root" -type f -name 'app.asar' -print -quit || true)"
+            if [ -n "$asar" ] && [ "$arch" = "amd64" -o "$arch" = "x86_64" ]; then
+              asar_out="$root/__app_asar_extracted"
+              npx --yes @electron/asar@4.3.1 extract "$asar" "$asar_out"
+            fi
+
+            census="out/chatgpt-linux/components/${pkg:-chatgpt}-${arch:-unknown}-${kind}"
+            python3 tools/characterize_desktop_bundle.py "$root" "$census" --label "${pkg:-chatgpt}-${arch:-unknown}-${kind}" --platform linux
 
             python3 - "$root" "$url" "$kind" "$pkg" "$ver" "$arch" "$sha" "$size" >> out/chatgpt-linux/packages.ndjson <<'PY'
           import json,pathlib,sys,collections,subprocess
