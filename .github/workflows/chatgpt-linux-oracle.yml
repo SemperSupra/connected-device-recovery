@@ -1,0 +1,215 @@
+name: Characterize official ChatGPT Linux packages
+# deep-runtime-census rep 2026-10-01
+# deep-runtime-census execution rep
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/chatgpt-linux-oracle.yml'
+      - 'tools/characterize_desktop_bundle.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  characterize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Acquire official package links and derive metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/chatgpt-linux
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+
+          python3 - "$work" <<'PY'
+          import json,re,sys,urllib.request,pathlib
+          work=pathlib.Path(sys.argv[1])
+          urls=[
+            "https://learn.chatgpt.com/docs/linux/linux-app.md",
+            "https://learn.chatgpt.com/docs/linux/linux-app",
+          ]
+          text=""
+          used=None
+          for url in urls:
+            try:
+              with urllib.request.urlopen(url, timeout=30) as r:
+                text=r.read().decode("utf-8","replace")
+                used=url
+                if text: break
+            except Exception:
+              pass
+          if not text:
+            raise SystemExit("official Linux install page unavailable")
+          links=sorted(set(re.findall(r'https://persistent\.oaistatic\.com/[^\s\)>"\']+', text)))
+          pkgs=[u for u in links if re.search(r'\.(?:deb|rpm)(?:\?|$)',u)]
+          scripts=[u for u in links if 'install-arch.sh' in u]
+          doc={"schema":"cdr-chatgpt-linux-discovery/v1","source":used,"package_urls":pkgs,"installer_urls":scripts}
+          pathlib.Path("out/chatgpt-linux/discovery.json").write_text(json.dumps(doc,indent=2,sort_keys=True)+"\n")
+          if not pkgs:
+            raise SystemExit("no official .deb/.rpm links discovered")
+          (work/"package-urls.txt").write_text("\n".join(pkgs)+"\n")
+          (work/"script-urls.txt").write_text("\n".join(scripts)+"\n")
+          PY
+
+          : > out/chatgpt-linux/packages.ndjson
+          while IFS= read -r url; do
+            [ -n "$url" ] || continue
+            base="$(basename "$(printf '%s' "$url" | cut -d'?' -f1)")"
+            path="$work/$base"
+            curl --proto '=https' --tlsv1.2 -fL --retry 3 "$url" -o "$path"
+            sha="$(sha256sum "$path" | awk '{print $1}')"
+            size="$(stat -c %s "$path")"
+            kind="unknown"
+            pkg=""
+            ver=""
+            arch=""
+            metadata="$work/meta.txt"
+            : > "$metadata"
+            root="$work/unpack-$sha"
+            mkdir -p "$root"
+
+            case "$path" in
+              *.deb)
+                kind=deb
+                dpkg-deb --info "$path" > "$metadata"
+                pkg="$(dpkg-deb -f "$path" Package || true)"
+                ver="$(dpkg-deb -f "$path" Version || true)"
+                arch="$(dpkg-deb -f "$path" Architecture || true)"
+                dpkg-deb -x "$path" "$root"
+                ;;
+              *.rpm)
+                kind=rpm
+                if ! command -v rpm >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq rpm; fi
+                rpm -qip "$path" > "$metadata" || true
+                rpm -Kv "$path" >> "$metadata" 2>&1 || true
+                pkg="$(rpm -qp --qf '%{NAME}' "$path" 2>/dev/null || true)"
+                ver="$(rpm -qp --qf '%{VERSION}-%{RELEASE}' "$path" 2>/dev/null || true)"
+                arch="$(rpm -qp --qf '%{ARCH}' "$path" 2>/dev/null || true)"
+                (cd "$root" && rpm2cpio "$path" | cpio -idmu --quiet) || true
+                ;;
+            esac
+
+            asar="$(find "$root" -type f -name 'app.asar' -print -quit || true)"
+            if [ -n "$asar" ] && [ "$arch" = "amd64" -o "$arch" = "x86_64" ]; then
+              asar_out="$root/__app_asar_extracted"
+              npx --yes @electron/asar@4.3.1 extract "$asar" "$asar_out"
+            fi
+
+            census="out/chatgpt-linux/components/${pkg:-chatgpt}-${arch:-unknown}-${kind}"
+            python3 tools/characterize_desktop_bundle.py "$root" "$census" --label "${pkg:-chatgpt}-${arch:-unknown}-${kind}" --platform linux
+
+            bundled_codex="$(find "$root" -type f \( -name codex -o -name codex-cli \) -path '*/resources/*' -print -quit || true)"
+            if [ -n "$bundled_codex" ]; then
+              chmod +x "$bundled_codex" || true
+              bundled_version="$("$bundled_codex" --version 2>&1 | head -n1 || true)"
+              bundled_hash="$(sha256sum "$bundled_codex" | awk '{print $1}')"
+              bundled_size="$(stat -c %s "$bundled_codex")"
+              semver="$(printf '%s' "$bundled_version" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+              compare_status="NO_MATCHING_PUBLIC_RELEASE"
+              standalone_hash=""
+              standalone_size=""
+              standalone_version=""
+              standalone_asset=""
+
+              if [ -n "$semver" ]; then
+                case "$arch" in
+                  amd64|x86_64) standalone_asset="codex-x86_64-unknown-linux-musl.tar.gz" ;;
+                  arm64|aarch64) standalone_asset="codex-aarch64-unknown-linux-musl.tar.gz" ;;
+                esac
+                if [ -n "$standalone_asset" ]; then
+                  standalone_archive="$work/standalone-$arch-$semver.tar.gz"
+                  standalone_dir="$work/standalone-$arch-$semver"
+                  mkdir -p "$standalone_dir"
+                  standalone_url="https://github.com/openai/codex/releases/download/rust-v$semver/$standalone_asset"
+                  if curl --proto '=https' --tlsv1.2 -fL --retry 2 "$standalone_url" -o "$standalone_archive"; then
+                    tar -xzf "$standalone_archive" -C "$standalone_dir"
+                    standalone_bin="$(find "$standalone_dir" -type f -name 'codex*' -perm -u+x -print | sort | head -n1 || true)"
+                    if [ -n "$standalone_bin" ]; then
+                      standalone_hash="$(sha256sum "$standalone_bin" | awk '{print $1}')"
+                      standalone_size="$(stat -c %s "$standalone_bin")"
+                      standalone_version="$("$standalone_bin" --version 2>&1 | head -n1 || true)"
+                      if [ "$standalone_hash" = "$bundled_hash" ]; then compare_status="EXACT_BINARY_MATCH"; else compare_status="DIFFERENT_BINARY"; fi
+                    fi
+                  fi
+                fi
+              fi
+
+              python3 - "$census" "$bundled_codex" "$bundled_version" "$bundled_hash" "$bundled_size" "$semver" "$standalone_asset" "$standalone_version" "$standalone_hash" "$standalone_size" "$compare_status" <<'PY'
+import json,pathlib,sys
+out=pathlib.Path(sys.argv[1])
+doc={
+  "schema":"cdr-bundled-vs-standalone-codex/v1",
+  "bundled":{"path":sys.argv[2],"version_output":sys.argv[3],"sha256":sys.argv[4],"size_bytes":int(sys.argv[5])},
+  "parsed_version":sys.argv[6] or None,
+  "standalone":{"asset":sys.argv[7] or None,"version_output":sys.argv[8] or None,"sha256":sys.argv[9] or None,
+                "size_bytes":int(sys.argv[10]) if sys.argv[10] else None},
+  "status":sys.argv[11],
+  "claim_boundary":"Binary identity comparison only; surrounding desktop runtime/plugins are compared separately."
+}
+(out/"codex-comparison.json").write_text(json.dumps(doc,indent=2,sort_keys=True)+"\n")
+PY
+            fi
+
+            python3 - "$root" "$url" "$kind" "$pkg" "$ver" "$arch" "$sha" "$size" >> out/chatgpt-linux/packages.ndjson <<'PY'
+          import json,pathlib,sys,collections,subprocess
+          root=pathlib.Path(sys.argv[1]); url,kind,pkg,ver,arch,sha,size=sys.argv[2:]
+          ext=collections.Counter(); names=[]; desktop=[]; mime=[]; elf=[]
+          for p in root.rglob("*"):
+            if not p.is_file(): continue
+            suffix=p.suffix.lower() or "<none>"; ext[suffix]+=1
+            rel=p.relative_to(root).as_posix()
+            if len(names)<500 and suffix in {".so",".js",".wasm",".pak",".node",".json",".desktop"}:
+              names.append(rel)
+            if suffix==".desktop" and len(desktop)<50: desktop.append(rel)
+            if "mime" in rel.lower() and len(mime)<50: mime.append(rel)
+            try:
+              out=subprocess.run(["file","-b",str(p)],capture_output=True,text=True,timeout=2).stdout
+              if "ELF " in out and len(elf)<200: elf.append({"path":rel,"file":out.strip()[:240]})
+            except Exception: pass
+          print(json.dumps({
+            "source_url":url,"package_kind":kind,"package_name":pkg or None,"version":ver or None,
+            "architecture":arch or None,"sha256":sha,"size_bytes":int(size),
+            "extension_counts":dict(ext.most_common()),"interesting_paths":sorted(names),
+            "desktop_files":sorted(desktop),"mime_related":sorted(mime),"elf_files":elf,
+            "claim_boundary":"Derived package evidence only; proprietary package bytes are not published."
+          },sort_keys=True))
+          PY
+          done < "$work/package-urls.txt"
+
+          if [ -s "$work/script-urls.txt" ]; then
+            url="$(head -n1 "$work/script-urls.txt")"
+            curl --proto '=https' --tlsv1.2 -fL --retry 3 "$url" -o "$work/install-arch.sh"
+            sha256sum "$work/install-arch.sh" > out/chatgpt-linux/arch-installer.sha256
+            python3 - "$url" "$work/install-arch.sh" > out/chatgpt-linux/arch-installer-derived.json <<'PY'
+          import json,re,sys,pathlib
+          text=pathlib.Path(sys.argv[2]).read_text(errors="replace")
+          urls=sorted(set(re.findall(r'https://[^\s"\']+',text)))
+          print(json.dumps({
+            "source_url":sys.argv[1],
+            "observed_urls":[u.rstrip(");,") for u in urls[:100]],
+            "mentions_package_managers":{k:(k in text) for k in ["pacman","apt","dnf"]},
+            "claim_boundary":"Only derived installer metadata is retained."
+          },indent=2,sort_keys=True))
+          PY
+          fi
+
+      - name: Prove proprietary packages are absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! find out/chatgpt-linux -type f \( -name '*.deb' -o -name '*.rpm' \) | grep -q .
+
+      - name: Upload derived Linux oracle evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-linux-derived-oracle
+          path: out/chatgpt-linux/
+          if-no-files-found: error
+          retention-days: 7
