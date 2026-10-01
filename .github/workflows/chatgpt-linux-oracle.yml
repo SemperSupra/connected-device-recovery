@@ -57,12 +57,15 @@ jobs:
           : > out/chatgpt-linux/packages.ndjson
           while IFS= read -r url; do
             [ -n "$url" ] || continue
-            base="$(basename "\${url%%\?*}")"
+            base="$(basename "$(printf '%s' "$url" | cut -d'?' -f1)")"
             path="$work/$base"
             curl --proto '=https' --tlsv1.2 -fL --retry 3 "$url" -o "$path"
             sha="$(sha256sum "$path" | awk '{print $1}')"
             size="$(stat -c %s "$path")"
             kind="unknown"
+            pkg=""
+            ver=""
+            arch=""
             metadata="$work/meta.txt"
             : > "$metadata"
             root="$work/unpack-$sha"
