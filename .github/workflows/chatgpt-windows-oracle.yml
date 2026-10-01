@@ -32,7 +32,9 @@ jobs:
             winget_present = $false
             msstore_source_present = $false
             show_status = 'NOT_RUN'
+            show_exit_code = $null
             download_status = 'NOT_RUN'
+            download_exit_code = $null
             package_payload_observed = $false
             proprietary_bytes_published = $false
           }
