@@ -30,9 +30,13 @@ class CharacterizeWindowsMsixTests(unittest.TestCase):
                 zf.writestr("AppxManifest.xml", MANIFEST)
                 zf.writestr("app/ChatGPT.exe", b"MZtest")
                 zf.writestr("app/resources.pak", b"pak")
+                zf.writestr("app/resources/app.asar", b"asar-payload")
+                zf.writestr("app/resources/app.asar.unpacked/node_modules/@scope/native/native.node", b"native")
+                zf.writestr("app/resources/plugins/openai-bundled/plugins/chrome/plugin.json", b"{}")
                 zf.writestr("AppxSignature.p7x", b"signature")
 
             result = characterize(path, "https://example.invalid/sample.msix", "x64")
+            self.assertEqual(result["schema"], "cdr-derived-windows-msix-surface/v2")
             self.assertEqual(result["package"]["identity"]["Name"], "OpenAI.Codex")
             self.assertEqual(result["package"]["properties"]["DisplayName"], "ChatGPT")
             self.assertEqual(result["files"]["executable_count"], 1)
@@ -40,6 +44,9 @@ class CharacterizeWindowsMsixTests(unittest.TestCase):
             self.assertTrue(result["files"]["selected_markers"]["chromium_or_electron"])
             self.assertTrue(result["package"]["signature"]["present"])
             self.assertEqual(len(result["package"]["sha256"]), 64)
+            self.assertEqual(len(result["runtime_topology"]["asar_archives"]), 1)
+            self.assertIn("@scope/native", result["runtime_topology"]["asar_unpacked_node_modules"])
+            self.assertIn("chrome", result["runtime_topology"]["bundled_plugin_ids"])
 
 
 if __name__ == "__main__":
