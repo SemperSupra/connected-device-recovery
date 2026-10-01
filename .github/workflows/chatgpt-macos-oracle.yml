@@ -41,9 +41,10 @@ jobs:
               continue
             links=sorted(set(re.findall(r'https://persistent\.oaistatic\.com/[^\s\)>"\']+',text)))
             found[label]={"source_url":url,"candidate_urls":links}
-          all_links=sorted(set(u for x in found.values() for u in x["candidate_urls"]))
+          official_candidates=["https://persistent.oaistatic.com/codex-app-prod/ChatGPT.dmg","https://persistent.oaistatic.com/codex-app-prod/ChatGPT-latest-x64.dmg","https://persistent.oaistatic.com/classic/public/ChatGPT_Classic.dmg"]
+          all_links=sorted(set(official_candidates + [u for x in found.values() for u in x["candidate_urls"]]))
           pathlib.Path("out/chatgpt-macos/discovery.json").write_text(
-            json.dumps({"schema":"cdr-chatgpt-macos-discovery/v1","sources":found,"all_dmg_urls":all_links},indent=2,sort_keys=True)+"\n")
+            json.dumps({"schema":"cdr-chatgpt-macos-discovery/v1","sources":found,"pinned_official_candidates":official_candidates,"all_dmg_urls":all_links},indent=2,sort_keys=True)+"\n")
           if not all_links:
             raise SystemExit("no official macOS download candidates discovered")
           (work/"dmg-urls.txt").write_text("\n".join(all_links)+"\n")
