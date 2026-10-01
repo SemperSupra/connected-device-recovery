@@ -97,6 +97,65 @@ jobs:
             census="out/chatgpt-macos/components/app-$index"
             python3 tools/characterize_desktop_bundle.py "$app" "$census" --label "macos-app-$index" --platform macos
 
+            bundled_codex="$(find "$app/Contents/Resources" -type f \( -name codex -o -name codex-cli \) -print -quit || true)"
+            if [ -n "$bundled_codex" ]; then
+              chmod +x "$bundled_codex" || true
+              arch_desc="$(file "$bundled_codex" || true)"
+              bundled_version="$("$bundled_codex" --version 2>&1 | head -n1 || true)"
+              if [ -z "$bundled_version" ] && printf '%s' "$arch_desc" | grep -q 'x86_64'; then
+                bundled_version="$(arch -x86_64 "$bundled_codex" --version 2>&1 | head -n1 || true)"
+              fi
+              if [ -z "$bundled_version" ]; then
+                bundled_version="$(strings "$bundled_codex" | grep -E 'codex(-cli)? [0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+              fi
+              bundled_hash="$(shasum -a 256 "$bundled_codex" | awk '{print $1}')"
+              bundled_size="$(stat -f %z "$bundled_codex")"
+              semver="$(printf '%s' "$bundled_version" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+              compare_status="NO_MATCHING_PUBLIC_RELEASE"
+              standalone_hash=""
+              standalone_size=""
+              standalone_version=""
+              standalone_asset=""
+
+              if printf '%s' "$arch_desc" | grep -q 'arm64'; then
+                standalone_asset="codex-aarch64-apple-darwin.tar.gz"
+              elif printf '%s' "$arch_desc" | grep -q 'x86_64'; then
+                standalone_asset="codex-x86_64-apple-darwin.tar.gz"
+              fi
+
+              if [ -n "$semver" ] && [ -n "$standalone_asset" ]; then
+                standalone_archive="$WORK/standalone-$index-$semver.tar.gz"
+                standalone_dir="$WORK/standalone-$index-$semver"
+                mkdir -p "$standalone_dir"
+                standalone_url="https://github.com/openai/codex/releases/download/rust-v$semver/$standalone_asset"
+                if curl --proto '=https' --tlsv1.2 -fL --retry 2 "$standalone_url" -o "$standalone_archive"; then
+                  tar -xzf "$standalone_archive" -C "$standalone_dir"
+                  standalone_bin="$(find "$standalone_dir" -type f -name 'codex*' -perm -u+x -print | sort | head -n1 || true)"
+                  if [ -n "$standalone_bin" ]; then
+                    standalone_hash="$(shasum -a 256 "$standalone_bin" | awk '{print $1}')"
+                    standalone_size="$(stat -f %z "$standalone_bin")"
+                    standalone_version="$("$standalone_bin" --version 2>&1 | head -n1 || true)"
+                    if [ "$standalone_hash" = "$bundled_hash" ]; then compare_status="EXACT_BINARY_MATCH"; else compare_status="DIFFERENT_BINARY"; fi
+                  fi
+                fi
+              fi
+
+              python3 - "$census" "$bundled_codex" "$arch_desc" "$bundled_version" "$bundled_hash" "$bundled_size" "$semver" "$standalone_asset" "$standalone_version" "$standalone_hash" "$standalone_size" "$compare_status" <<'PY'
+import json,pathlib,sys
+out=pathlib.Path(sys.argv[1])
+doc={
+  "schema":"cdr-bundled-vs-standalone-codex/v1",
+  "bundled":{"path":sys.argv[2],"architecture":sys.argv[3],"version_output":sys.argv[4],"sha256":sys.argv[5],"size_bytes":int(sys.argv[6])},
+  "parsed_version":sys.argv[7] or None,
+  "standalone":{"asset":sys.argv[8] or None,"version_output":sys.argv[9] or None,"sha256":sys.argv[10] or None,
+                "size_bytes":int(sys.argv[11]) if sys.argv[11] else None},
+  "status":sys.argv[12],
+  "claim_boundary":"Binary identity comparison only; surrounding desktop runtime/plugins are compared separately."
+}
+(out/"codex-comparison.json").write_text(json.dumps(doc,indent=2,sort_keys=True)+"\n")
+PY
+            fi
+
             python3 - "$app" "$url" "$sha" "$size" "$WORK/codesign-$index.txt" "$WORK/entitlements-$index.plist" "$WORK/spctl-$index.txt" >> out/chatgpt-macos/apps.ndjson <<'PY'
           import collections,json,pathlib,plistlib,subprocess,sys
           app=pathlib.Path(sys.argv[1]); url,sha,size=sys.argv[2:5]
