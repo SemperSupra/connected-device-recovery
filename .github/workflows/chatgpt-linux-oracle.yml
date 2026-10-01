@@ -3,6 +3,7 @@ name: Characterize official ChatGPT Linux packages
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/chatgpt-linux-oracle.yml'
       - 'tools/characterize_desktop_bundle.py'
