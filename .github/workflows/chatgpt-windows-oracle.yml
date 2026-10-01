@@ -32,8 +32,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $arch = '\${{ matrix.arch }}'
-          $url = '\${{ matrix.url }}'
+          $arch = '${{ matrix.arch }}'
+          $url = '${{ matrix.url }}'
           $out = Join-Path $PWD "out/chatgpt-windows-$arch"
           $work = Join-Path $env:RUNNER_TEMP "chatgpt-windows-$arch"
           $msix = Join-Path $work 'ChatGPT.msix'
@@ -141,7 +141,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $out = Join-Path $PWD 'out/chatgpt-windows-\${{ matrix.arch }}'
+          $out = Join-Path $PWD 'out/chatgpt-windows-${{ matrix.arch }}'
           $bad = @(Get-ChildItem $out -Recurse -File |
             Where-Object { $_.Extension -match '^\.(msix|appx|msixbundle|appxbundle|exe|dll|node|asar)$' })
           if ($bad.Count -ne 0) {
@@ -152,7 +152,7 @@ jobs:
       - name: Upload sanitized Windows oracle evidence
         uses: actions/upload-artifact@v4
         with:
-          name: chatgpt-windows-\${{ matrix.arch }}-derived-oracle
-          path: out/chatgpt-windows-\${{ matrix.arch }}/
+          name: chatgpt-windows-${{ matrix.arch }}-derived-oracle
+          path: out/chatgpt-windows-${{ matrix.arch }}/
           if-no-files-found: error
           retention-days: 7
