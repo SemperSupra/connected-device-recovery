@@ -102,6 +102,58 @@ jobs:
             census="out/chatgpt-linux/components/${pkg:-chatgpt}-${arch:-unknown}-${kind}"
             python3 tools/characterize_desktop_bundle.py "$root" "$census" --label "${pkg:-chatgpt}-${arch:-unknown}-${kind}" --platform linux
 
+            bundled_codex="$(find "$root" -type f \( -name codex -o -name codex-cli \) -path '*/resources/*' -print -quit || true)"
+            if [ -n "$bundled_codex" ]; then
+              chmod +x "$bundled_codex" || true
+              bundled_version="$("$bundled_codex" --version 2>&1 | head -n1 || true)"
+              bundled_hash="$(sha256sum "$bundled_codex" | awk '{print $1}')"
+              bundled_size="$(stat -c %s "$bundled_codex")"
+              semver="$(printf '%s' "$bundled_version" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+              compare_status="NO_MATCHING_PUBLIC_RELEASE"
+              standalone_hash=""
+              standalone_size=""
+              standalone_version=""
+              standalone_asset=""
+
+              if [ -n "$semver" ]; then
+                case "$arch" in
+                  amd64|x86_64) standalone_asset="codex-x86_64-unknown-linux-musl.tar.gz" ;;
+                  arm64|aarch64) standalone_asset="codex-aarch64-unknown-linux-musl.tar.gz" ;;
+                esac
+                if [ -n "$standalone_asset" ]; then
+                  standalone_archive="$work/standalone-$arch-$semver.tar.gz"
+                  standalone_dir="$work/standalone-$arch-$semver"
+                  mkdir -p "$standalone_dir"
+                  standalone_url="https://github.com/openai/codex/releases/download/rust-v$semver/$standalone_asset"
+                  if curl --proto '=https' --tlsv1.2 -fL --retry 2 "$standalone_url" -o "$standalone_archive"; then
+                    tar -xzf "$standalone_archive" -C "$standalone_dir"
+                    standalone_bin="$(find "$standalone_dir" -type f -name 'codex*' -perm -u+x -print | sort | head -n1 || true)"
+                    if [ -n "$standalone_bin" ]; then
+                      standalone_hash="$(sha256sum "$standalone_bin" | awk '{print $1}')"
+                      standalone_size="$(stat -c %s "$standalone_bin")"
+                      standalone_version="$("$standalone_bin" --version 2>&1 | head -n1 || true)"
+                      if [ "$standalone_hash" = "$bundled_hash" ]; then compare_status="EXACT_BINARY_MATCH"; else compare_status="DIFFERENT_BINARY"; fi
+                    fi
+                  fi
+                fi
+              fi
+
+              python3 - "$census" "$bundled_codex" "$bundled_version" "$bundled_hash" "$bundled_size" "$semver" "$standalone_asset" "$standalone_version" "$standalone_hash" "$standalone_size" "$compare_status" <<'PY'
+import json,pathlib,sys
+out=pathlib.Path(sys.argv[1])
+doc={
+  "schema":"cdr-bundled-vs-standalone-codex/v1",
+  "bundled":{"path":sys.argv[2],"version_output":sys.argv[3],"sha256":sys.argv[4],"size_bytes":int(sys.argv[5])},
+  "parsed_version":sys.argv[6] or None,
+  "standalone":{"asset":sys.argv[7] or None,"version_output":sys.argv[8] or None,"sha256":sys.argv[9] or None,
+                "size_bytes":int(sys.argv[10]) if sys.argv[10] else None},
+  "status":sys.argv[11],
+  "claim_boundary":"Binary identity comparison only; surrounding desktop runtime/plugins are compared separately."
+}
+(out/"codex-comparison.json").write_text(json.dumps(doc,indent=2,sort_keys=True)+"\n")
+PY
+            fi
+
             python3 - "$root" "$url" "$kind" "$pkg" "$ver" "$arch" "$sha" "$size" >> out/chatgpt-linux/packages.ndjson <<'PY'
           import json,pathlib,sys,collections,subprocess
           root=pathlib.Path(sys.argv[1]); url,kind,pkg,ver,arch,sha,size=sys.argv[2:]
