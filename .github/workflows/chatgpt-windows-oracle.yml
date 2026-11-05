@@ -102,7 +102,7 @@ jobs:
           $blockMapPath = Join-Path $extract 'AppxBlockMap.xml'
           $derived = [ordered]@{
             schema = 'cdr-chatgpt-windows-derived-package/v2'
-            evidence_date = '2026-10-01'
+            evidence_date = ([DateTime]::UtcNow).ToString('yyyy-MM-dd')
             source_url = $url
             store_id = $env:STORE_ID
             requested_architecture = $arch
