@@ -44,6 +44,11 @@ jobs:
           $sha = (Get-FileHash -Algorithm SHA256 -Path $msix).Hash.ToLowerInvariant()
           $size = (Get-Item $msix).Length
           $sig = Get-AuthenticodeSignature -FilePath $msix
+          # A recorded signature is not a trust gate. Refuse invalid/unsigned
+          # packages before reading their archive contents.
+          if ([string]$sig.Status -ne 'Valid' -or -not $sig.SignerCertificate) {
+            throw "MSIX Authenticode signature is not Valid or has no signer certificate."
+          }
 
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           [System.IO.Compression.ZipFile]::ExtractToDirectory($msix, $extract)
@@ -54,6 +59,12 @@ jobs:
 
           $identity = $manifest.SelectSingleNode("//*[local-name()='Identity']")
           if (-not $identity) { throw 'Package Identity missing from AppxManifest.xml.' }
+          if ([string]$identity.Publisher -ne [string]$sig.SignerCertificate.Subject) {
+            throw "MSIX manifest publisher does not match the verified signer certificate."
+          }
+          if ([string]$identity.ProcessorArchitecture -ne $arch) {
+            throw "MSIX manifest architecture does not match the requested architecture."
+          }
 
           $caps = @($manifest.SelectNodes("//*[local-name()='Capability'] | //*[local-name()='DeviceCapability'] | //*[local-name()='CustomCapability']") |
             ForEach-Object { [string]$_.Name } | Where-Object { $_ } | Sort-Object -Unique)
