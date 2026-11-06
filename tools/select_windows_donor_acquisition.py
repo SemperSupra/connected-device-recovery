@@ -59,8 +59,8 @@ def main() -> int:
     output = os.environ.get("GITHUB_OUTPUT")
     if output:
         with open(output, "a", encoding="utf-8") as fp:
-            fp.write(f"acquire={'true' if accepted else 'false'}\\n")
-            fp.write(f"reason={reason}\\n")
+            fp.write(f"acquire={'true' if accepted else 'false'}" + chr(10))
+            fp.write(f"reason={reason}" + chr(10))
     print(json.dumps({
         "schema": "cdr-windows-acquisition-selector/v1",
         "acquire": accepted,
