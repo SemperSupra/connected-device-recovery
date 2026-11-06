@@ -28,6 +28,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate bounded ASAR header parser on source-known fixtures
+        shell: pwsh
+        run: node tools/characterize_asar_header.cjs --self-test
+
       - name: Acquire current Store-signed MSIX directly from OpenAI
         shell: pwsh
         run: |
@@ -110,6 +114,18 @@ jobs:
             $executables += $record
           }
 
+          # Observe ASAR index semantics, never copy the header or file bodies.
+          # The on-runner parser emits counts, a header digest and bounded shape only.
+          $asarFiles = @($files | Where-Object { $_.Extension -ieq '.asar' })
+          if ($asarFiles.Count -eq 0) { throw 'Expected ASAR container is missing from this build.' }
+          if ($asarFiles.Count -gt 4) { throw 'ASAR source count exceeds bounded qualification.' }
+          $asarInventory = @()
+          foreach ($asar in $asarFiles) {
+            $asarLine = & node tools/characterize_asar_header.cjs $asar.FullName
+            if ($LASTEXITCODE -ne 0) { throw 'ASAR header/index qualification failed.' }
+            $asarInventory += ($asarLine | ConvertFrom-Json)
+          }
+
           $blockMapPath = Join-Path $extract 'AppxBlockMap.xml'
           $derived = [ordered]@{
             schema = 'cdr-chatgpt-windows-derived-package/v2'
@@ -139,6 +155,7 @@ jobs:
             extension_counts = $extensionCounts
             interesting_paths = $interesting
             executable_inventory = $executables
+            asar_header_inventory = $asarInventory
             manifest_sha256 = (Get-FileHash -Algorithm SHA256 -Path $manifestPath).Hash.ToLowerInvariant()
             block_map_sha256 = if (Test-Path $blockMapPath) { (Get-FileHash -Algorithm SHA256 -Path $blockMapPath).Hash.ToLowerInvariant() } else { $null }
             proprietary_bytes_published = $false
