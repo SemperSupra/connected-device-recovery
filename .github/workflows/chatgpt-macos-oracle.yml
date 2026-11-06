@@ -167,19 +167,19 @@ jobs:
               fi
 
               python3 - "$census" "$bundled_codex" "$arch_desc" "$bundled_version" "$bundled_hash" "$bundled_size" "$semver" "$standalone_asset" "$standalone_version" "$standalone_hash" "$standalone_size" "$compare_status" <<'PY'
-import json,pathlib,sys
-out=pathlib.Path(sys.argv[1])
-doc={
-  "schema":"cdr-bundled-vs-standalone-codex/v1",
-  "bundled":{"path":sys.argv[2],"architecture":sys.argv[3],"version_output":sys.argv[4],"sha256":sys.argv[5],"size_bytes":int(sys.argv[6])},
-  "parsed_version":sys.argv[7] or None,
-  "standalone":{"asset":sys.argv[8] or None,"version_output":sys.argv[9] or None,"sha256":sys.argv[10] or None,
-                "size_bytes":int(sys.argv[11]) if sys.argv[11] else None},
-  "status":sys.argv[12],
-  "claim_boundary":"Binary identity comparison only; surrounding desktop runtime/plugins are compared separately."
-}
-(out/"codex-comparison.json").write_text(json.dumps(doc,indent=2,sort_keys=True)+"\n")
-PY
+          import json,pathlib,sys
+          out=pathlib.Path(sys.argv[1])
+          doc={
+            "schema":"cdr-bundled-vs-standalone-codex/v1",
+            "bundled":{"path":sys.argv[2],"architecture":sys.argv[3],"version_output":sys.argv[4],"sha256":sys.argv[5],"size_bytes":int(sys.argv[6])},
+            "parsed_version":sys.argv[7] or None,
+            "standalone":{"asset":sys.argv[8] or None,"version_output":sys.argv[9] or None,"sha256":sys.argv[10] or None,
+                          "size_bytes":int(sys.argv[11]) if sys.argv[11] else None},
+            "status":sys.argv[12],
+            "claim_boundary":"Binary identity comparison only; surrounding desktop runtime/plugins are compared separately."
+          }
+          (out/"codex-comparison.json").write_text(json.dumps(doc,indent=2,sort_keys=True)+"\n")
+          PY
             fi
 
             python3 - "$app" "$url" "$sha" "$size" "$WORK/codesign-$index.txt" "$WORK/entitlements-$index.plist" "$WORK/spctl-$index.txt" >> out/chatgpt-macos/apps.ndjson <<'PY'
