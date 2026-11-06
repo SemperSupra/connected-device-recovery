@@ -8,6 +8,8 @@ on:
     paths:
       - '.github/workflows/chatgpt-linux-oracle.yml'
       - 'tools/characterize_desktop_bundle.py'
+      - 'tools/qualify_rpm_signature.py'
+      - 'tests/test_qualify_rpm_signature.py'
   workflow_dispatch:
 
 permissions:
@@ -30,7 +32,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m py_compile tools/characterize_desktop_bundle.py
+          python3 -m py_compile tools/characterize_desktop_bundle.py tools/qualify_rpm_signature.py
+          python3 -m unittest -v tests.test_qualify_rpm_signature
           python3 - <<'PY'
           import gzip, json, pathlib, subprocess, sys, tempfile
           with tempfile.TemporaryDirectory() as temp:
@@ -100,6 +103,7 @@ jobs:
             pkg=""
             ver=""
             arch=""
+            signature_status="PACKAGE_AUTHENTICITY_NOT_VERIFIED"
             metadata="$work/meta.txt"
             : > "$metadata"
             root="$work/unpack-$sha"
@@ -108,6 +112,7 @@ jobs:
             case "$path" in
               *.deb)
                 kind=deb
+                signature_status="DEB_PACKAGE_AUTHENTICITY_NOT_VERIFIED"
                 dpkg-deb --info "$path" > "$metadata"
                 pkg="$(dpkg-deb -f "$path" Package || true)"
                 ver="$(dpkg-deb -f "$path" Version || true)"
@@ -118,7 +123,17 @@ jobs:
                 kind=rpm
                 if ! command -v rpm >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq rpm; fi
                 rpm -qip "$path" > "$metadata" || true
-                rpm -Kv "$path" >> "$metadata" 2>&1 || true
+                # A zero rpm -Kv exit with NOKEY is NOT signer authenticity.
+                # Store only a normalized unpromoted verdict in the published
+                # receipt. Never import an unreviewed repository key.
+                rpm_log="$work/rpm-verify-$sha.log"
+                if rpm -Kv "$path" > "$rpm_log" 2>&1; then rpm_rc=0; else rpm_rc=$?; fi
+                cat "$rpm_log" >> "$metadata"
+                rpm_receipt="$work/rpm-verify-$sha.json"
+                python3 tools/qualify_rpm_signature.py --log "$rpm_log" --exit-code "$rpm_rc" --out "$rpm_receipt"
+                signature_status="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["status"])' "$rpm_receipt")"
+                # Visible warning is an honest acceptance hold, never a fake green trust claim.
+                echo "::warning title=RPM authenticity hold::Official RPM signing key is not independently attested; $signature_status"
                 pkg="$(rpm -qp --qf '%{NAME}' "$path" 2>/dev/null || true)"
                 ver="$(rpm -qp --qf '%{VERSION}-%{RELEASE}' "$path" 2>/dev/null || true)"
                 arch="$(rpm -qp --qf '%{ARCH}' "$path" 2>/dev/null || true)"
@@ -137,8 +152,9 @@ jobs:
 
             bundled_codex="$(find "$root" -type f \( -name codex -o -name codex-cli \) -path '*/resources/*' -print -quit || true)"
             if [ -n "$bundled_codex" ]; then
-              chmod +x "$bundled_codex" || true
-              bundled_version="$("$bundled_codex" --version 2>&1 | head -n1 || true)"
+              # Original downloaded executables are not run in this untrusted
+              # static census; code/symbol evidence is observations only.
+              bundled_version="$(LC_ALL=C strings "$bundled_codex" | grep -Eo 'codex(-cli)? [0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
               bundled_hash="$(sha256sum "$bundled_codex" | awk '{print $1}')"
               bundled_size="$(stat -c %s "$bundled_codex")"
               semver="$(printf '%s' "$bundled_version" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
@@ -164,7 +180,7 @@ jobs:
                     if [ -n "$standalone_bin" ]; then
                       standalone_hash="$(sha256sum "$standalone_bin" | awk '{print $1}')"
                       standalone_size="$(stat -c %s "$standalone_bin")"
-                      standalone_version="$("$standalone_bin" --version 2>&1 | head -n1 || true)"
+                      standalone_version="NOT_EXECUTED_STATIC_ONLY"
                       if [ "$standalone_hash" = "$bundled_hash" ]; then compare_status="EXACT_BINARY_MATCH"; else compare_status="DIFFERENT_BINARY"; fi
                     fi
                   fi
@@ -187,9 +203,9 @@ jobs:
           PY
             fi
 
-            python3 - "$root" "$url" "$kind" "$pkg" "$ver" "$arch" "$sha" "$size" >> out/chatgpt-linux/packages.ndjson <<'PY'
+            python3 - "$root" "$url" "$kind" "$pkg" "$ver" "$arch" "$sha" "$size" "$signature_status" >> out/chatgpt-linux/packages.ndjson <<'PY'
           import json,pathlib,sys,collections,subprocess
-          root=pathlib.Path(sys.argv[1]); url,kind,pkg,ver,arch,sha,size=sys.argv[2:]
+          root=pathlib.Path(sys.argv[1]); url,kind,pkg,ver,arch,sha,size,signature_status=sys.argv[2:]
           ext=collections.Counter(); names=[]; desktop=[]; mime=[]; elf=[]
           for p in root.rglob("*"):
             if not p.is_file(): continue
@@ -206,6 +222,8 @@ jobs:
           print(json.dumps({
             "source_url":url,"package_kind":kind,"package_name":pkg or None,"version":ver or None,
             "architecture":arch or None,"sha256":sha,"size_bytes":int(size),
+            "package_signature_status":signature_status,
+            "official_publisher_key_attested":False,
             "extension_counts":dict(ext.most_common()),"interesting_paths":sorted(names),
             "desktop_files":sorted(desktop),"mime_related":sorted(mime),"elf_files":elf,
             "claim_boundary":"Derived package evidence only; proprietary package bytes are not published."
