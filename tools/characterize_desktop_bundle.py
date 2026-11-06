@@ -182,14 +182,14 @@ def main():
                 playwright.append({'path':rel,'sha256':digest,'browsers':rows})
             if p.suffix.lower()=='.node':
                 info=run(['file','-b',str(p)])
-                deps=run(['otool','-L',str(p)]) if args.platform=='macos' else run(['ldd',str(p)])
+                deps=run(['otool','-L',str(p)]) if args.platform=='macos' else run(['readelf','-d',str(p)])
                 natives.append({'path':rel,'size':size,'sha256':digest,'file':info,'dependencies':deps})
             if os.access(p,os.X_OK) and any(marker in ('/'+rel.lower()) for marker in (
                 '/resources/cua_node/','/resources/native/','/resources/plugins/','/resources/codex','/app.asar.unpacked/')):
                 component_executables.append({
                     'path':rel,'size':size,'sha256':digest,
                     'file':run(['file','-b',str(p)]),
-                    'dependencies': run(['otool','-L',str(p)]) if args.platform=='macos' else run(['ldd',str(p)])
+                    'dependencies': run(['otool','-L',str(p)]) if args.platform=='macos' else run(['readelf','-d',str(p)])
                 })
             if low.startswith('license') or low in {'copying','notice','third_party_licenses','third-party-licenses.txt'}:
                 licenses.append({'path':rel,'size':size,'sha256':digest})
@@ -198,7 +198,7 @@ def main():
 
             if low in {'codex','codex-cli','codex-code-mode-host','codex.exe','codex-cli.exe','codex-code-mode-host.exe'}:
                 mode=p.stat().st_mode
-                version=run([str(p),'--version']) if (os.access(p,os.X_OK) or args.platform=='windows') else {'not_executable':True}
+                version={'status':'NOT_EXECUTED_STATIC_ONLY'}
                 executables.append({'path':rel,'size':size,'sha256':digest,'mode':oct(stat.S_IMODE(mode)),'version_probe':version})
 
     summary={
