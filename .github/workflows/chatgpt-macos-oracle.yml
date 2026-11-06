@@ -13,12 +13,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   characterize:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: macos-26
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 / Node24
+        with:
+          persist-credentials: false
 
       - name: Discover official macOS installers
         shell: bash
@@ -59,6 +66,15 @@ jobs:
         run: |
           set -euo pipefail
           : > out/chatgpt-macos/apps.ndjson
+          # DMG volumes are read-only; always detach even on a later parser
+          # failure so the disposable runner leaves no mounted donor state.
+          mounted_volumes=()
+          detach_mounted_volumes() {
+            for vol in "${mounted_volumes[@]}"; do
+              hdiutil detach "$vol" >/dev/null 2>&1 || true
+            done
+          }
+          trap detach_mounted_volumes EXIT
           index=0
           while IFS= read -r url; do
             [ -n "$url" ] || continue
@@ -79,6 +95,7 @@ jobs:
               echo "mount point not found" >&2
               exit 21
             fi
+            mounted_volumes+=("$volume")
 
             app="$(find "$volume" -maxdepth 2 -type d -name '*.app' -print -quit)"
             if [ -z "$app" ]; then
@@ -92,13 +109,19 @@ jobs:
             spctl -a -vv "$app" > "$WORK/spctl-$index.txt" 2>&1 || true
 
             asar="$(find "$app" -type f -name 'app.asar' -print -quit || true)"
+            asar_out=""
             if [ -n "$asar" ]; then
-              asar_out="$app/Contents/Resources/__app_asar_extracted"
+              # Never attempt to write inside the read-only mounted DMG.
+              # Keep the unchanged signed app for codesign/spctl provenance.
+              asar_out="$WORK/asar-extracted-$index"
               npx --yes @electron/asar@4.3.1 extract "$asar" "$asar_out"
             fi
 
             census="out/chatgpt-macos/components/app-$index"
             python3 tools/characterize_desktop_bundle.py "$app" "$census" --label "macos-app-$index" --platform macos
+            if [ -n "$asar_out" ]; then
+              python3 tools/characterize_desktop_bundle.py "$asar_out" "$census/asar" --label "macos-asar-$index" --platform macos
+            fi
 
             bundled_codex="$(find "$app/Contents/Resources" -type f \( -name codex -o -name codex-cli \) -print -quit || true)"
             if [ -n "$bundled_codex" ]; then
@@ -210,7 +233,7 @@ PY
           ! find out/chatgpt-macos -type f -name '*.dmg' | grep -q .
 
       - name: Upload derived macOS oracle evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6 / Node24
         with:
           name: chatgpt-macos-derived-oracle
           path: out/chatgpt-macos/
