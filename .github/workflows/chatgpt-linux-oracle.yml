@@ -13,12 +13,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   characterize:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 / Node24
+        with:
+          persist-credentials: false
 
       - name: Acquire official package links and derive metadata
         shell: bash
@@ -142,19 +149,19 @@ jobs:
               fi
 
               python3 - "$census" "$bundled_codex" "$bundled_version" "$bundled_hash" "$bundled_size" "$semver" "$standalone_asset" "$standalone_version" "$standalone_hash" "$standalone_size" "$compare_status" <<'PY'
-import json,pathlib,sys
-out=pathlib.Path(sys.argv[1])
-doc={
-  "schema":"cdr-bundled-vs-standalone-codex/v1",
-  "bundled":{"path":sys.argv[2],"version_output":sys.argv[3],"sha256":sys.argv[4],"size_bytes":int(sys.argv[5])},
-  "parsed_version":sys.argv[6] or None,
-  "standalone":{"asset":sys.argv[7] or None,"version_output":sys.argv[8] or None,"sha256":sys.argv[9] or None,
-                "size_bytes":int(sys.argv[10]) if sys.argv[10] else None},
-  "status":sys.argv[11],
-  "claim_boundary":"Binary identity comparison only; surrounding desktop runtime/plugins are compared separately."
-}
-(out/"codex-comparison.json").write_text(json.dumps(doc,indent=2,sort_keys=True)+"\n")
-PY
+          import json,pathlib,sys
+          out=pathlib.Path(sys.argv[1])
+          doc={
+            "schema":"cdr-bundled-vs-standalone-codex/v1",
+            "bundled":{"path":sys.argv[2],"version_output":sys.argv[3],"sha256":sys.argv[4],"size_bytes":int(sys.argv[5])},
+            "parsed_version":sys.argv[6] or None,
+            "standalone":{"asset":sys.argv[7] or None,"version_output":sys.argv[8] or None,"sha256":sys.argv[9] or None,
+                          "size_bytes":int(sys.argv[10]) if sys.argv[10] else None},
+            "status":sys.argv[11],
+            "claim_boundary":"Binary identity comparison only; surrounding desktop runtime/plugins are compared separately."
+          }
+          (out/"codex-comparison.json").write_text(json.dumps(doc,indent=2,sort_keys=True)+"\n")
+          PY
             fi
 
             python3 - "$root" "$url" "$kind" "$pkg" "$ver" "$arch" "$sha" "$size" >> out/chatgpt-linux/packages.ndjson <<'PY'
@@ -207,7 +214,7 @@ PY
           ! find out/chatgpt-linux -type f \( -name '*.deb' -o -name '*.rpm' \) | grep -q .
 
       - name: Upload derived Linux oracle evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6 / Node24
         with:
           name: chatgpt-linux-derived-oracle
           path: out/chatgpt-linux/
