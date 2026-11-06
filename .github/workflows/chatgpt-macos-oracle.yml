@@ -50,6 +50,16 @@ jobs:
           PY
 
 
+      - name: Prove OS signature tool rejects an unsigned synthetic file
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'synthetic unsigned fixture' > "$RUNNER_TEMP/unsigned-donor-negative"
+          if codesign --verify --deep --strict "$RUNNER_TEMP/unsigned-donor-negative" >/dev/null 2>&1; then
+            echo "::error::codesign unexpectedly accepted unsigned fixture"
+            exit 22
+          fi
+
       - name: Discover official macOS installers
         shell: bash
         run: |
@@ -127,9 +137,26 @@ jobs:
               exit 22
             fi
 
+            # Describing a signature does not verify it. Require native
+            # integrity and Gatekeeper acceptance before scanning this donor.
+            if codesign --verify --deep --strict --verbose=2 "$app" > "$WORK/codesign-verification-$index.txt" 2>&1; then
+              codesign_status="VERIFIED"
+            else
+              codesign_status="FAILED"
+            fi
             codesign -dv --verbose=4 "$app" > "$WORK/codesign-$index.txt" 2>&1 || true
             codesign -d --entitlements :- "$app" > "$WORK/entitlements-$index.plist" 2>/dev/null || true
-            spctl -a -vv "$app" > "$WORK/spctl-$index.txt" 2>&1 || true
+            if spctl -a -vv "$app" > "$WORK/spctl-$index.txt" 2>&1; then
+              gatekeeper_status="ACCEPTED"
+            else
+              gatekeeper_status="NOT_ACCEPTED"
+            fi
+            printf '{"schema":"cdr-macos-signature-gate/v1","codesign":"%s","gatekeeper":"%s","official_publisher_key_attested":false}' \
+              "$codesign_status" "$gatekeeper_status" > "out/chatgpt-macos/signature-gate-$index.json"
+            if [ "$codesign_status" != "VERIFIED" ] || [ "$gatekeeper_status" != "ACCEPTED" ]; then
+              echo "::error::macOS donor rejected by codesign verification or Gatekeeper. Static recovery held."
+              exit 23
+            fi
 
             asar="$(find "$app" -type f -name 'app.asar' -print -quit || true)"
             asar_out=""
@@ -148,15 +175,9 @@ jobs:
 
             bundled_codex="$(find "$app/Contents/Resources" -type f \( -name codex -o -name codex-cli \) -print -quit || true)"
             if [ -n "$bundled_codex" ]; then
-              chmod +x "$bundled_codex" || true
+              # Do not execute original donor binaries in this static-only lane.
               arch_desc="$(file "$bundled_codex" || true)"
-              bundled_version="$("$bundled_codex" --version 2>&1 | head -n1 || true)"
-              if [ -z "$bundled_version" ] && printf '%s' "$arch_desc" | grep -q 'x86_64'; then
-                bundled_version="$(arch -x86_64 "$bundled_codex" --version 2>&1 | head -n1 || true)"
-              fi
-              if [ -z "$bundled_version" ]; then
-                bundled_version="$(strings "$bundled_codex" | grep -E 'codex(-cli)? [0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
-              fi
+              bundled_version="$(LC_ALL=C strings "$bundled_codex" | grep -E 'codex(-cli)? [0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
               bundled_hash="$(shasum -a 256 "$bundled_codex" | awk '{print $1}')"
               bundled_size="$(stat -f %z "$bundled_codex")"
               semver="$(printf '%s' "$bundled_version" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
@@ -183,7 +204,7 @@ jobs:
                   if [ -n "$standalone_bin" ]; then
                     standalone_hash="$(shasum -a 256 "$standalone_bin" | awk '{print $1}')"
                     standalone_size="$(stat -f %z "$standalone_bin")"
-                    standalone_version="$("$standalone_bin" --version 2>&1 | head -n1 || true)"
+                    standalone_version="NOT_EXECUTED_STATIC_ONLY"
                     if [ "$standalone_hash" = "$bundled_hash" ]; then compare_status="EXACT_BINARY_MATCH"; else compare_status="DIFFERENT_BINARY"; fi
                   fi
                 fi
@@ -255,7 +276,17 @@ jobs:
           set -euo pipefail
           ! find out/chatgpt-macos -type f -name '*.dmg' | grep -q .
 
+      - name: Emit typed static-only job status
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p out/chatgpt-macos
+          printf '{"schema":"cdr-macos-workcell/v1","source_head":"%s","workflow_checkout_sha":"%s","job_status":"%s","original_runtime_qualified":false}' \
+            '${{ github.event.pull_request.head.sha || github.sha }}' "$GITHUB_SHA" '${{ job.status }}' \
+            > out/chatgpt-macos/workcell-status.json
+
       - name: Upload derived macOS oracle evidence
+        if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6 / Node24
         with:
           name: chatgpt-macos-derived-oracle
