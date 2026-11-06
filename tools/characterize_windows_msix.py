@@ -12,6 +12,31 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from datetime import datetime, timezone
 
+MAX_ENTRIES = 250_000
+MAX_PATH_CHARS = 4096
+MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+MAX_ASAR_BYTES = 2 * 1024 * 1024 * 1024
+
+
+def validate_archive_members(infos: list[zipfile.ZipInfo]) -> None:
+    """Reject ambiguous or unsafe ZIP names before deriving any package claims."""
+    if len(infos) > MAX_ENTRIES:
+        raise ValueError("MSIX archive entry limit exceeded")
+    seen: set[str] = set()
+    for item in infos:
+        name = item.filename
+        if (not name or len(name) > MAX_PATH_CHARS or name.startswith("/")
+                or "\\\\" in name or "\\x00" in name):
+            raise ValueError("unsafe MSIX archive member name")
+        segments = name.rstrip("/").split("/")
+        if (not segments or any(x in {"", ".", ".."} for x in segments)
+                or ":" in segments[0]):
+            raise ValueError("unsafe MSIX archive member path")
+        key = name.rstrip("/").casefold()
+        if key in seen:
+            raise ValueError("ambiguous case-folded or repeated MSIX archive member")
+        seen.add(key)
+
 
 def sha256_path(path: pathlib.Path) -> str:
     h = hashlib.sha256()
@@ -121,6 +146,7 @@ def characterize(path: pathlib.Path, source_url: str, architecture_hint: str) ->
 
     with zipfile.ZipFile(path) as zf:
         infos = zf.infolist()
+        validate_archive_members(infos)
         info_by_name = {i.filename: i for i in infos if not i.is_dir()}
         names = list(info_by_name)
         manifest_name = next(
@@ -130,6 +156,8 @@ def characterize(path: pathlib.Path, source_url: str, architecture_hint: str) ->
         if manifest_name is None:
             raise SystemExit("AppxManifest.xml missing")
 
+        if info_by_name[manifest_name].file_size > MAX_MANIFEST_BYTES:
+            raise ValueError("MSIX manifest exceeds bounded parser limit")
         manifest_bytes = zf.read(manifest_name)
         root = ET.fromstring(manifest_bytes)
 
@@ -194,6 +222,9 @@ def characterize(path: pathlib.Path, source_url: str, architecture_hint: str) ->
         )
 
         asar_paths = [n for n in names if n.lower().endswith(".asar")]
+        for name in asar_paths:
+            if info_by_name[name].file_size > MAX_ASAR_BYTES:
+                raise ValueError("ASAR archive exceeds bounded hash limit")
         asar_archives = [
             {
                 "path": name,
@@ -217,7 +248,7 @@ def characterize(path: pathlib.Path, source_url: str, architecture_hint: str) ->
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "source": {
                 "url": source_url,
-                "source_class": "official-openai-store-signed-stable-link",
+                "source_class": "CALLER_SUPPLIED_URL_NOT_PROVEN_BY_PARSER",
                 "architecture_hint": architecture_hint,
             },
             "package": {
@@ -231,6 +262,11 @@ def characterize(path: pathlib.Path, source_url: str, architecture_hint: str) ->
                 "identity": identity,
                 "properties": properties,
                 "signature": signature,
+                "archive_structure_checked": True,
+                "architecture_verdict": (
+                    "MATCH" if identity.get("ProcessorArchitecture") == architecture_hint else
+                    "MISMATCH" if identity.get("ProcessorArchitecture") else "NOT_ESTABLISHED"
+                ),
             },
             "manifest": {
                 "dependencies": dependencies,
