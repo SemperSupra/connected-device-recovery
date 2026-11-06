@@ -26,6 +26,29 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 / Node24
         with:
           persist-credentials: false
+      - name: Validate source-neutral desktop census and NDJSON schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/characterize_desktop_bundle.py
+          python3 - <<'PY'
+          import gzip, json, pathlib, subprocess, sys, tempfile
+          with tempfile.TemporaryDirectory() as temp:
+              base = pathlib.Path(temp)
+              src = base / "src"
+              dst = base / "out"
+              src.mkdir()
+              (src / "fixture.txt").write_text("synthetic", encoding="utf-8")
+              subprocess.run([sys.executable, "tools/characterize_desktop_bundle.py",
+                              str(src), str(dst), "--label", "ci-synthetic"],
+                             check=True, capture_output=True, text=True)
+              with gzip.open(dst / "files.ndjson.gz", "rt", encoding="utf-8") as fp:
+                  records = [json.loads(line) for line in fp if line.strip()]
+              assert len(records) == 1 and records[0]["path"] == "fixture.txt"
+              summary = json.loads((dst / "summary.json").read_text())
+              assert summary["schema"] == "cdr-desktop-runtime-component-census/v1"
+          PY
+
 
       - name: Discover official macOS installers
         shell: bash
