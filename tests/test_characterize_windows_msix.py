@@ -49,5 +49,46 @@ class CharacterizeWindowsMsixTests(unittest.TestCase):
             self.assertIn("chrome", result["runtime_topology"]["bundled_plugin_ids"])
 
 
+class MsixAdversarialArchiveTests(unittest.TestCase):
+    def test_malformed_names_and_duplicate_members_fail_closed(self):
+        cases = [
+            ["app/../escape.txt"],
+            ["/absolute.txt"],
+            ["C:/drive.txt"],
+            ["app\\\\backslash.txt"],
+            ["folder//double.txt"],
+            ["folder/./dot.txt"],
+            ["AppxManifest.xml"],
+            ["data.txt", "DATA.TXT"],
+        ]
+        for extras in cases:
+            with self.subTest(extras=extras), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "bad.msix"
+                with zipfile.ZipFile(path, "w") as zf:
+                    zf.writestr("AppxManifest.xml", MANIFEST)
+                    for extra in extras:
+                        zf.writestr(extra, b"x")
+                with self.assertRaises(ValueError):
+                    characterize(path, "https://example.invalid/synthetic.msix", "x64")
+
+    def test_oversize_manifest_header_is_rejected_before_parse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oversize.msix"
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("AppxManifest.xml", b"x" * (4 * 1024 * 1024 + 1))
+            with self.assertRaisesRegex(ValueError, "manifest exceeds"):
+                characterize(path, "https://example.invalid/synthetic.msix", "x64")
+
+    def test_architecture_hint_does_not_override_observed_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "arch.msix"
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("AppxManifest.xml", MANIFEST)
+            r = characterize(path, "https://example.invalid/synthetic.msix", "arm64")
+            self.assertEqual(r["package"]["architecture_verdict"], "MISMATCH")
+            self.assertEqual(r["source"]["source_class"], "CALLER_SUPPLIED_URL_NOT_PROVEN_BY_PARSER")
+            self.assertEqual(r["package"]["signature"]["verification"], "not-performed-by-linux-static-rep")
+
+
 if __name__ == "__main__":
     unittest.main()
