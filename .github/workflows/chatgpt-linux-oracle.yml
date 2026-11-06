@@ -10,6 +10,7 @@ on:
       - 'tools/characterize_desktop_bundle.py'
       - 'tools/qualify_rpm_signature.py'
       - 'tests/test_qualify_rpm_signature.py'
+      - 'tests/test_characterize_desktop_noexec.py'
   workflow_dispatch:
 
 permissions:
@@ -34,6 +35,7 @@ jobs:
           set -euo pipefail
           python3 -m py_compile tools/characterize_desktop_bundle.py tools/qualify_rpm_signature.py
           python3 -m unittest -v tests.test_qualify_rpm_signature
+          python3 -m unittest -v tests.test_characterize_desktop_noexec
           python3 - <<'PY'
           import gzip, json, pathlib, subprocess, sys, tempfile
           with tempfile.TemporaryDirectory() as temp:
