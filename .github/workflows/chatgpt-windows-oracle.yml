@@ -187,7 +187,12 @@ jobs:
           $status = [ordered]@{
             schema = 'cdr-chatgpt-windows-workcell/v1'
             architecture = $arch
-            source_head = $env:GITHUB_SHA
+            # pull_request GITHUB_SHA is the synthetic merge commit, not
+            # the donor-workflow source head. Preserve both identities.
+            source_head = '${{ github.event.pull_request.head.sha || github.sha }}'
+            workflow_checkout_sha = $env:GITHUB_SHA
+            workflow_run_id = $env:GITHUB_RUN_ID
+            workflow_run_attempt = $env:GITHUB_RUN_ATTEMPT
             acquisition_outcome = '${{ steps.acquire.outcome }}'
             qualified_original_runtime = $false
             claim_boundary = 'This job produces derived static evidence only.'
