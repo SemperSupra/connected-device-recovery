@@ -7,6 +7,8 @@ on:
       - '.github/workflows/chatgpt-windows-parser-contract.yml'
       - 'tools/characterize_windows_msix.py'
       - 'tests/test_characterize_windows_msix.py'
+      - 'tools/select_windows_donor_acquisition.py'
+      - 'tests/test_select_windows_donor_acquisition.py'
   workflow_dispatch:
 
 permissions:
@@ -31,6 +33,8 @@ jobs:
           set -euo pipefail
           python3 -m py_compile tools/characterize_windows_msix.py tests/test_characterize_windows_msix.py
           python3 -m unittest -v tests.test_characterize_windows_msix
+          python3 -m py_compile tools/select_windows_donor_acquisition.py tests/test_select_windows_donor_acquisition.py
+          python3 -m unittest -v tests.test_select_windows_donor_acquisition
       - name: Confirm strictly synthetic contract classification
         shell: bash
         run: |
