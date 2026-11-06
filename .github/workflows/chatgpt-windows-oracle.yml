@@ -4,13 +4,20 @@ on:
   pull_request:
     paths:
       - '.github/workflows/chatgpt-windows-oracle.yml'
+      - 'tools/characterize_asar_header.cjs'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# Avoid duplicate large (~900MB per arch) acquisitions on obsolete PR heads.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   characterize:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       fail-fast: false
       matrix:
@@ -26,13 +33,16 @@ jobs:
       STORE_ID: 9PLM9XGG6VKS
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 / Node 24
+        with:
+          persist-credentials: false
 
       - name: Validate bounded ASAR header parser on source-known fixtures
         shell: pwsh
         run: node tools/characterize_asar_header.cjs --self-test
 
       - name: Acquire current Store-signed MSIX directly from OpenAI
+        id: acquire
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -165,7 +175,31 @@ jobs:
           $derived | ConvertTo-Json -Depth 20 | Set-Content -Encoding UTF8 (Join-Path $out 'derived-package.json')
           Remove-Item -Force -Recurse $work -ErrorAction SilentlyContinue
 
+      - name: Preserve typed failure receipt and clean transient donor bytes
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = '${{ matrix.arch }}'
+          $out = Join-Path $PWD "out/chatgpt-windows-$arch"
+          $work = Join-Path $env:RUNNER_TEMP "chatgpt-windows-$arch"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $status = [ordered]@{
+            schema = 'cdr-chatgpt-windows-workcell/v1'
+            architecture = $arch
+            source_head = $env:GITHUB_SHA
+            acquisition_outcome = '${{ steps.acquire.outcome }}'
+            qualified_original_runtime = $false
+            claim_boundary = 'This job produces derived static evidence only.'
+          }
+          $status | ConvertTo-Json -Depth 5 |
+            Set-Content -Encoding UTF8 (Join-Path $out 'workcell-status.json')
+          if (Test-Path -LiteralPath $work) {
+            Remove-Item -LiteralPath $work -Force -Recurse -ErrorAction Stop
+          }
+
       - name: Prove proprietary package payload is absent
+        if: always()
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -178,7 +212,8 @@ jobs:
           }
 
       - name: Upload sanitized Windows oracle evidence
-        uses: actions/upload-artifact@v4
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6 / Node 24
         with:
           name: chatgpt-windows-${{ matrix.arch }}-derived-oracle
           path: out/chatgpt-windows-${{ matrix.arch }}/
