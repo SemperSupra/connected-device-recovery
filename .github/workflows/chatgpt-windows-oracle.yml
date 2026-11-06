@@ -16,8 +16,32 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  characterize:
+  admit:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      acquire: ${{ steps.select.outputs.acquire }}
+      reason: ${{ steps.select.outputs.reason }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 / Node24
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Fail-conservative incremental donor acquisition admission
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/select_windows_donor_acquisition.py
+          python3 -m unittest -v tests.test_select_windows_donor_acquisition
+          python3 tools/select_windows_donor_acquisition.py
+
+  characterize:
+    needs: admit
+    # A skipped donor job is NOT package/runtime qualification; the source-only
+    # contract workflow remains the separate exact-head code check.
+    if: needs.admit.outputs.acquire == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     strategy:
       fail-fast: false
       matrix:
