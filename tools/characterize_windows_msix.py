@@ -26,7 +26,7 @@ def validate_archive_members(infos: list[zipfile.ZipInfo]) -> None:
     for item in infos:
         name = item.filename
         if (not name or len(name) > MAX_PATH_CHARS or name.startswith("/")
-                or "\\\\" in name or "\\x00" in name):
+                or chr(92) in name or chr(0) in name):
             raise ValueError("unsafe MSIX archive member name")
         segments = name.rstrip("/").split("/")
         if (not segments or any(x in {"", ".", ".."} for x in segments)
