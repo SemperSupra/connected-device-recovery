@@ -43,8 +43,12 @@ class GuestDOMTests(unittest.TestCase):
             self.assertEqual(result["status"],"DOM_SHAPE_OBSERVED_NOT_AUTHENTICATED_APP")
             self.assertEqual(result["dom_shape"]["allowlisted_tag_counts"]["button"],1)
             body=json.dumps(result)
-            self.assertNotIn("private",body)
-            self.assertNotIn("secret",body)
+            # 'private state' is a fixed, public claim-boundary sentence,
+            # so prohibit the actual synthetic DOM payload rather than that
+            # ordinary word when testing privacy redaction.
+            self.assertNotIn("secret text",body)
+            self.assertNotIn("value=",body)
+            self.assertNotIn("token",body)
             self.assertFalse(result["raw_dom_or_screenshot_published"])
 
     def test_timeout_bound(self):
