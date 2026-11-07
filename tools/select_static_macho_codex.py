@@ -15,16 +15,16 @@ import struct
 CPU_X86_64 = 0x01000007
 CPU_ARM64 = 0x0100000C
 THIN_MAGICS = {
-    b"\\xcf\\xfa\\xed\\xfe": "<",  # MH_CIGAM_64 byte order
-    b"\\xfe\\xed\\xfa\\xcf": ">",  # MH_MAGIC_64 byte order
-    b"\\xce\\xfa\\xed\\xfe": "<",  # MH_CIGAM 32-bit
-    b"\\xfe\\xed\\xfa\\xce": ">",  # MH_MAGIC 32-bit
+    bytes.fromhex("cffaedfe"): "<",  # little-endian 64-bit Mach-O
+    bytes.fromhex("feedfacf"): ">",  # big-endian 64-bit Mach-O
+    bytes.fromhex("cefaedfe"): "<",  # little-endian 32-bit Mach-O
+    bytes.fromhex("feedface"): ">",  # big-endian 32-bit Mach-O
 }
 FAT_MAGICS = {
-    b"\\xca\\xfe\\xba\\xbe": (">", 20),
-    b"\\xbe\\xba\\xfe\\xca": ("<", 20),
-    b"\\xca\\xfe\\xba\\xbf": (">", 32),
-    b"\\xbf\\xba\\xfe\\xca": ("<", 32),
+    bytes.fromhex("cafebabe"): (">", 20),
+    bytes.fromhex("bebafeca"): ("<", 20),
+    bytes.fromhex("cafebabf"): (">", 32),
+    bytes.fromhex("bfbafeca"): ("<", 32),
 }
 MAX_CANDIDATES = 64
 MAX_FAT_ARCHES = 16
