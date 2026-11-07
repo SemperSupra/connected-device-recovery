@@ -9,6 +9,8 @@ on:
       - 'tests/test_characterize_windows_msix.py'
       - 'tools/select_windows_donor_acquisition.py'
       - 'tests/test_select_windows_donor_acquisition.py'
+      - 'tools/compare_chatgpt_platform_receipts.py'
+      - 'tests/test_compare_chatgpt_platform_receipts.py'
   workflow_dispatch:
 
 permissions:
@@ -35,6 +37,8 @@ jobs:
           python3 -m unittest -v tests.test_characterize_windows_msix
           python3 -m py_compile tools/select_windows_donor_acquisition.py tests/test_select_windows_donor_acquisition.py
           python3 -m unittest -v tests.test_select_windows_donor_acquisition
+          python3 -m py_compile tools/compare_chatgpt_platform_receipts.py tests/test_compare_chatgpt_platform_receipts.py
+          python3 -m unittest -v tests.test_compare_chatgpt_platform_receipts
       - name: Confirm strictly synthetic contract classification
         shell: bash
         run: |
