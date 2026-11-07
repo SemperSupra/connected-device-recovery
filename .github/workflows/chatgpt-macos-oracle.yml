@@ -1,0 +1,336 @@
+name: Characterize official ChatGPT macOS applications
+# deep-runtime-census rep 2026-10-01
+# deep-runtime-census execution rep
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/chatgpt-macos-oracle.yml'
+      - 'tools/select_desktop_donor_acquisition.py'
+      - 'tests/test_select_desktop_donor_acquisition.py'
+      - 'tools/characterize_desktop_bundle.py'
+      - 'tests/test_characterize_desktop_noexec.py'
+      - 'tools/select_static_macho_codex.py'
+      - 'tests/test_select_static_macho_codex.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  # A later docs/test-only head must not cancel an expensive signed-donor rep.
+  # Admission below checks only the actual synchronize commit range.
+  cancel-in-progress: false
+
+jobs:
+  admit:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      acquire: ${{ steps.select.outputs.acquire }}
+      reason: ${{ steps.select.outputs.reason }}
+    env:
+      DONOR_PROFILE: macos
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 / Node24
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Qualify source-only desktop donor admission controls
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/select_desktop_donor_acquisition.py tests/test_select_desktop_donor_acquisition.py
+          python3 -m unittest -v tests.test_select_desktop_donor_acquisition
+          python3 -m tools.select_desktop_donor_acquisition
+
+  characterize:
+    needs: admit
+    if: needs.admit.outputs.acquire == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 / Node24
+        with:
+          persist-credentials: false
+      - name: Validate source-neutral desktop census and NDJSON schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/characterize_desktop_bundle.py
+          python3 -m unittest -v tests.test_characterize_desktop_noexec
+          python3 -m py_compile tools/select_static_macho_codex.py tests/test_select_static_macho_codex.py
+          python3 -m unittest -v tests.test_select_static_macho_codex
+          python3 - <<'PY'
+          import gzip, json, pathlib, subprocess, sys, tempfile
+          with tempfile.TemporaryDirectory() as temp:
+              base = pathlib.Path(temp)
+              src = base / "src"
+              dst = base / "out"
+              src.mkdir()
+              (src / "fixture.txt").write_text("synthetic", encoding="utf-8")
+              subprocess.run([sys.executable, "tools/characterize_desktop_bundle.py",
+                              str(src), str(dst), "--label", "ci-synthetic"],
+                             check=True, capture_output=True, text=True)
+              with gzip.open(dst / "files.ndjson.gz", "rt", encoding="utf-8") as fp:
+                  records = [json.loads(line) for line in fp if line.strip()]
+              assert len(records) == 1 and records[0]["path"] == "fixture.txt"
+              summary = json.loads((dst / "summary.json").read_text())
+              assert summary["schema"] == "cdr-desktop-runtime-component-census/v1"
+          PY
+
+
+      - name: Prove OS signature tool rejects an unsigned synthetic file
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'synthetic unsigned fixture' > "$RUNNER_TEMP/unsigned-donor-negative"
+          if codesign --verify --deep --strict "$RUNNER_TEMP/unsigned-donor-negative" >/dev/null 2>&1; then
+            echo "::error::codesign unexpectedly accepted unsigned fixture"
+            exit 22
+          fi
+
+      - name: Discover official macOS installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/chatgpt-macos
+          work="$(mktemp -d)"
+          echo "WORK=$work" >> "$GITHUB_ENV"
+
+          python3 - "$work" <<'PY'
+          import json,re,sys,urllib.request,pathlib
+          work=pathlib.Path(sys.argv[1])
+          sources=[
+            ("unified-doc","https://learn.chatgpt.com/docs/app.md"),
+            ("download-page","https://chatgpt.com/download/"),
+          ]
+          found={}
+          for label,url in sources:
+            try:
+              req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0"})
+              with urllib.request.urlopen(req,timeout=30) as r:
+                text=r.read().decode("utf-8","replace")
+            except Exception:
+              continue
+            links=sorted(set(re.findall(r'https://persistent\.oaistatic\.com/[^\s\)>"\']+',text)))
+            found[label]={"source_url":url,"candidate_urls":links}
+          official_candidates=["https://persistent.oaistatic.com/codex-app-prod/ChatGPT.dmg","https://persistent.oaistatic.com/codex-app-prod/ChatGPT-latest-x64.dmg","https://persistent.oaistatic.com/classic/public/ChatGPT_Classic.dmg"]
+          all_links=sorted(set(official_candidates + [u for x in found.values() for u in x["candidate_urls"]]))
+          pathlib.Path("out/chatgpt-macos/discovery.json").write_text(
+            json.dumps({"schema":"cdr-chatgpt-macos-discovery/v1","sources":found,"pinned_official_candidates":official_candidates,"all_dmg_urls":all_links},indent=2,sort_keys=True)+"\n")
+          if not all_links:
+            raise SystemExit("no official macOS download candidates discovered")
+          (work/"dmg-urls.txt").write_text("\n".join(all_links)+"\n")
+          PY
+
+      - name: Derive signed bundle and runtime evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > out/chatgpt-macos/apps.ndjson
+          # DMG volumes are read-only; always detach even on a later parser
+          # failure so the disposable runner leaves no mounted donor state.
+          mounted_volumes=()
+          detach_mounted_volumes() {
+            for vol in "${mounted_volumes[@]}"; do
+              hdiutil detach "$vol" >/dev/null 2>&1 || true
+            done
+          }
+          trap detach_mounted_volumes EXIT
+          index=0
+          while IFS= read -r url; do
+            [ -n "$url" ] || continue
+            index=$((index+1))
+            dmg="$WORK/chatgpt-$index.dmg"
+            curl --proto '=https' --tlsv1.2 -fL --retry 3 "$url" -o "$dmg"
+            sha="$(shasum -a 256 "$dmg" | awk '{print $1}')"
+            size="$(stat -f %z "$dmg")"
+
+            attach="$WORK/attach-$index.txt"
+            if ! hdiutil attach -nobrowse -readonly "$dmg" | tee "$attach"; then
+              echo "candidate_not_mountable=$url" >> out/chatgpt-macos/skipped-candidates.txt
+              rm -f "$dmg"
+              continue
+            fi
+            volume="$(awk -F '\t' '$3 ~ /^\/Volumes\// {print $3}' "$attach" | tail -n1)"
+            if [ -z "$volume" ]; then
+              echo "mount point not found" >&2
+              exit 21
+            fi
+            mounted_volumes+=("$volume")
+
+            app="$(find "$volume" -maxdepth 2 -type d -name '*.app' -print -quit)"
+            if [ -z "$app" ]; then
+              hdiutil detach "$volume" || true
+              echo "application bundle not found" >&2
+              exit 22
+            fi
+
+            # Describing a signature does not verify it. Require native
+            # integrity and Gatekeeper acceptance before scanning this donor.
+            if codesign --verify --deep --strict --verbose=2 "$app" > "$WORK/codesign-verification-$index.txt" 2>&1; then
+              codesign_status="VERIFIED"
+            else
+              codesign_status="FAILED"
+            fi
+            codesign -dv --verbose=4 "$app" > "$WORK/codesign-$index.txt" 2>&1 || true
+            codesign -d --entitlements :- "$app" > "$WORK/entitlements-$index.plist" 2>/dev/null || true
+            if spctl -a -vv "$app" > "$WORK/spctl-$index.txt" 2>&1; then
+              gatekeeper_status="ACCEPTED"
+            else
+              gatekeeper_status="NOT_ACCEPTED"
+            fi
+            printf '{"schema":"cdr-macos-signature-gate/v1","codesign":"%s","gatekeeper":"%s","official_publisher_key_attested":false}' \
+              "$codesign_status" "$gatekeeper_status" > "out/chatgpt-macos/signature-gate-$index.json"
+            if [ "$codesign_status" != "VERIFIED" ] || [ "$gatekeeper_status" != "ACCEPTED" ]; then
+              echo "::error::macOS donor rejected by codesign verification or Gatekeeper. Static recovery held."
+              exit 23
+            fi
+
+            asar="$(find "$app" -type f -name 'app.asar' -print -quit || true)"
+            asar_out=""
+            if [ -n "$asar" ]; then
+              # Never attempt to write inside the read-only mounted DMG.
+              # Keep the unchanged signed app for codesign/spctl provenance.
+              asar_out="$WORK/asar-extracted-$index"
+              npx --yes @electron/asar@4.3.1 extract "$asar" "$asar_out"
+            fi
+
+            census="out/chatgpt-macos/components/app-$index"
+            python3 tools/characterize_desktop_bundle.py "$app" "$census" --label "macos-app-$index" --platform macos
+            if [ -n "$asar_out" ]; then
+              python3 tools/characterize_desktop_bundle.py "$asar_out" "$census/asar" --label "macos-asar-$index" --platform macos
+            fi
+
+            # Native binary may coexist with a same-name 328-byte shell
+            # wrapper; select by bounded Mach-O headers, never by find-first.
+            bundled_codex="$(python3 tools/select_static_macho_codex.py "$app/Contents/Resources" --receipt "$census/codex-selection.json")"
+            if [ -n "$bundled_codex" ]; then
+              # Do not execute original donor binaries in this static-only lane.
+              arch_desc="$(file "$bundled_codex" || true)"
+              bundled_version="$(LC_ALL=C strings "$bundled_codex" | grep -E 'codex(-cli)? [0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+              bundled_hash="$(shasum -a 256 "$bundled_codex" | awk '{print $1}')"
+              bundled_size="$(stat -f %z "$bundled_codex")"
+              semver="$(printf '%s' "$bundled_version" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+              compare_status="NO_MATCHING_PUBLIC_RELEASE"
+              standalone_hash=""
+              standalone_size=""
+              standalone_version=""
+              standalone_asset=""
+
+              if printf '%s' "$arch_desc" | grep -q 'arm64'; then
+                standalone_asset="codex-aarch64-apple-darwin.tar.gz"
+              elif printf '%s' "$arch_desc" | grep -q 'x86_64'; then
+                standalone_asset="codex-x86_64-apple-darwin.tar.gz"
+              fi
+
+              if [ -n "$semver" ] && [ -n "$standalone_asset" ]; then
+                standalone_archive="$WORK/standalone-$index-$semver.tar.gz"
+                standalone_dir="$WORK/standalone-$index-$semver"
+                mkdir -p "$standalone_dir"
+                standalone_url="https://github.com/openai/codex/releases/download/rust-v$semver/$standalone_asset"
+                if curl --proto '=https' --tlsv1.2 -fL --retry 2 "$standalone_url" -o "$standalone_archive"; then
+                  tar -xzf "$standalone_archive" -C "$standalone_dir"
+                  standalone_bin="$(find "$standalone_dir" -type f -name 'codex*' -perm -u+x -print | sort | head -n1 || true)"
+                  if [ -n "$standalone_bin" ]; then
+                    standalone_hash="$(shasum -a 256 "$standalone_bin" | awk '{print $1}')"
+                    standalone_size="$(stat -f %z "$standalone_bin")"
+                    standalone_version="NOT_EXECUTED_STATIC_ONLY"
+                    if [ "$standalone_hash" = "$bundled_hash" ]; then compare_status="EXACT_BINARY_MATCH"; else compare_status="DIFFERENT_BINARY"; fi
+                  fi
+                fi
+              fi
+
+              python3 - "$census" "$bundled_codex" "$arch_desc" "$bundled_version" "$bundled_hash" "$bundled_size" "$semver" "$standalone_asset" "$standalone_version" "$standalone_hash" "$standalone_size" "$compare_status" <<'PY'
+          import json,pathlib,sys
+          out=pathlib.Path(sys.argv[1])
+          doc={
+            "schema":"cdr-bundled-vs-standalone-codex/v1",
+            "bundled":{"path":sys.argv[2],"architecture":sys.argv[3],"version_output":sys.argv[4],"sha256":sys.argv[5],"size_bytes":int(sys.argv[6])},
+            "parsed_version":sys.argv[7] or None,
+            "standalone":{"asset":sys.argv[8] or None,"version_output":sys.argv[9] or None,"sha256":sys.argv[10] or None,
+                          "size_bytes":int(sys.argv[11]) if sys.argv[11] else None},
+            "status":sys.argv[12],
+            "claim_boundary":"Binary identity comparison only; surrounding desktop runtime/plugins are compared separately."
+          }
+          (out/"codex-comparison.json").write_text(json.dumps(doc,indent=2,sort_keys=True)+"\n")
+          PY
+            fi
+
+            python3 - "$app" "$url" "$sha" "$size" "$WORK/codesign-$index.txt" "$WORK/entitlements-$index.plist" "$WORK/spctl-$index.txt" >> out/chatgpt-macos/apps.ndjson <<'PY'
+          import collections,json,pathlib,plistlib,subprocess,sys
+          app=pathlib.Path(sys.argv[1]); url,sha,size=sys.argv[2:5]
+          code=pathlib.Path(sys.argv[5]).read_text(errors="replace")
+          ent_path=pathlib.Path(sys.argv[6]); spctl=pathlib.Path(sys.argv[7]).read_text(errors="replace")
+          info={}
+          with (app/"Contents/Info.plist").open("rb") as f: raw=plistlib.load(f)
+          for k in ["CFBundleIdentifier","CFBundleName","CFBundleDisplayName","CFBundleShortVersionString","CFBundleVersion","LSMinimumSystemVersion","SUFeedURL","SUEnableAutomaticChecks"]:
+            if k in raw: info[k]=raw[k]
+          ents={}
+          if ent_path.exists() and ent_path.stat().st_size:
+            try:
+              with ent_path.open("rb") as f: ents=plistlib.load(f)
+            except Exception: ents={}
+          ext=collections.Counter(); interesting=[]; macho=[]; frameworks=set()
+          for p in app.rglob("*"):
+            if not p.is_file(): continue
+            rel=p.relative_to(app).as_posix()
+            suffix=p.suffix.lower() or "<none>"; ext[suffix]+=1
+            if "/Frameworks/" in "/"+rel:
+              parts=rel.split("/")
+              if "Frameworks" in parts:
+                i=parts.index("Frameworks")
+                if i+1<len(parts): frameworks.add(parts[i+1])
+            if len(interesting)<600 and suffix in {".dylib",".framework",".js",".wasm",".pak",".node",".json",".plist"}:
+              interesting.append(rel)
+            try:
+              out=subprocess.run(["file","-b",str(p)],capture_output=True,text=True,timeout=2).stdout
+              if "Mach-O" in out and len(macho)<250: macho.append({"path":rel,"file":out.strip()[:240]})
+            except Exception: pass
+          print(json.dumps({
+            "source_url":url,"dmg_sha256":sha,"dmg_size_bytes":int(size),
+            "bundle":info,"codesign_summary":code[:4000],"spctl_summary":spctl[:2000],
+            "entitlement_keys":sorted(str(k) for k in ents.keys()),
+            "extension_counts":dict(ext.most_common()),"frameworks":sorted(frameworks),
+            "interesting_paths":sorted(interesting),"mach_o_files":macho,
+            "claim_boundary":"Derived signed-bundle evidence only; proprietary DMG/app bytes are not published."
+          },sort_keys=True))
+          PY
+
+            hdiutil detach "$volume"
+            rm -f "$dmg"
+          done < "$WORK/dmg-urls.txt"
+
+      - name: Prove proprietary installers are absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! find out/chatgpt-macos -type f -name '*.dmg' | grep -q .
+
+      - name: Emit typed static-only job status
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p out/chatgpt-macos
+          printf '{"schema":"cdr-macos-workcell/v1","source_head":"%s","workflow_checkout_sha":"%s","job_status":"%s","original_runtime_qualified":false}' \
+            '${{ github.event.pull_request.head.sha || github.sha }}' "$GITHUB_SHA" '${{ job.status }}' \
+            > out/chatgpt-macos/workcell-status.json
+
+      - name: Upload derived macOS oracle evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6 / Node24
+        with:
+          name: chatgpt-macos-derived-oracle
+          path: out/chatgpt-macos/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Cleanup transient application bytes
+        if: always()
+        shell: bash
+        run: rm -rf "$WORK" || true
