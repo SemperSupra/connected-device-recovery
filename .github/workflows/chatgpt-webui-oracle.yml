@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/chatgpt-webui-oracle.yml'
       - 'tools/chatgpt_webui_guest_safety.py'
+      - 'tools/chatgpt_guest_dom_sensor.py'
+      - 'tests/test_chatgpt_guest_dom_sensor.py'
       - 'tests/test_chatgpt_webui_guest_safety.py'
   workflow_dispatch:
 
@@ -30,6 +32,9 @@ jobs:
           set -euo pipefail
           python3 -m py_compile tools/chatgpt_webui_guest_safety.py
           python3 -m unittest -v tests.test_chatgpt_webui_guest_safety
+          python3 -m py_compile tools/chatgpt_guest_dom_sensor.py
+          python3 -m unittest -v tests.test_chatgpt_guest_dom_sensor
+          python3 -m tools.chatgpt_guest_dom_sensor --help > /dev/null
 
       - name: Probe unauthenticated API and product surfaces
         shell: bash
@@ -184,6 +189,12 @@ jobs:
             "claim_boundary":"Hashes, sizes and bounded term presence only; no proprietary JS/CSS source is published."
           },indent=2,sort_keys=True)+"\n")
           PY
+
+      - name: Observe anonymous live DOM structure with ephemeral headless Chrome
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m tools.chatgpt_guest_dom_sensor --output out/chatgpt-webui/guest-dom-shape.json
 
       - name: Upload public-safe WebUI evidence
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6 / Node24
