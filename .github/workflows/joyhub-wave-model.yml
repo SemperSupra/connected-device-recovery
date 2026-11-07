@@ -10,9 +10,12 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with: {python-version: "3.13"}
       - run: python -m py_compile tools/probe_joyhub_wave_model.py
       - name: Validate sanitized evidence
@@ -31,4 +34,24 @@ jobs:
           assert d["policy"]["server_ids_guessed"] is False
           assert d["policy"]["raw_payload_published"] is False
           print("wave-model evidence PASS")
+          PY
+
+      - name: Prove offline transport failure is nonzero
+        run: |
+          python - <<'PY'
+          import contextlib, io, json
+          from unittest.mock import patch
+          from urllib.error import URLError
+          from tools.probe_joyhub_wave_model import main
+          captured=io.StringIO()
+          with patch("tools.probe_joyhub_wave_model.urllib.request.urlopen",
+                     side_effect=URLError("synthetic-offline")):
+              with contextlib.redirect_stdout(captured):
+                  status=main()
+          receipt=json.loads(captured.getvalue())
+          assert status == 2
+          assert receipt["classification"] == "TRANSPORT_FAILURE"
+          assert receipt["error_type"] == "URLError"
+          assert receipt["schema"] == "cdr-joyhub-wave-model-probe/v1"
+          print("offline-fail-closed=PASS")
           PY
