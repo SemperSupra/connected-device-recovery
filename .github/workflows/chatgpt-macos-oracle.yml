@@ -7,6 +7,8 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/chatgpt-macos-oracle.yml'
+      - 'tools/select_desktop_donor_acquisition.py'
+      - 'tests/test_select_desktop_donor_acquisition.py'
       - 'tools/characterize_desktop_bundle.py'
       - 'tests/test_characterize_desktop_noexec.py'
       - 'tools/select_static_macho_codex.py'
@@ -18,11 +20,37 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A later docs/test-only head must not cancel an expensive signed-donor rep.
+  # Admission below checks only the actual synchronize commit range.
+  cancel-in-progress: false
 
 jobs:
-  characterize:
+  admit:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      acquire: ${{ steps.select.outputs.acquire }}
+      reason: ${{ steps.select.outputs.reason }}
+    env:
+      DONOR_PROFILE: macos
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 / Node24
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Qualify source-only desktop donor admission controls
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/select_desktop_donor_acquisition.py tests/test_select_desktop_donor_acquisition.py
+          python3 -m unittest -v tests.test_select_desktop_donor_acquisition
+          python3 -m tools.select_desktop_donor_acquisition
+
+  characterize:
+    needs: admit
+    if: needs.admit.outputs.acquire == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-26
     timeout-minutes: 25
     steps:
