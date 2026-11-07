@@ -40,6 +40,14 @@ Parsing sanitized `plugins.json` preserves duplicate names as a **multiset of SH
 
 These names identify bundled descriptor presence only. **Do not infer install-time activation, service backend access, capabilities granted, functional parity, runtime IPC, or end-user availability.** Architecture of the default macOS DMG must not be guessed from its URL.
 
+## Additional MCP process-launch clues (static config only)
+
+The default macOS DMG's three additional `.mcp.json` manifests describe server IDs `computer-history`, `messages`, and `event-stream`. Each uses command basename `computer-use-client-launcher` with a **two-argument** launch shape; the normalized descriptors show **no explicit URL host** or environment-key entries. This is a plausible local process/pipe sensor candidate, **not evidence that any process was launched, server advertised tools, or data/state was accessed**.
+
+In the shared baseline, `codex_app` declares `launch_codex_app_tools_mcp` (one argument) and `cua_repl` declares `node` (zero arguments). Their matching presence in both macOS DMGs helps isolate the three additional launcher-surface declarations in the default DMG.
+
+Next runtime test, when authorized/admitted: capture redacted OS-level process/argv identity, inherited file descriptors and IPC transport, MCP initialize/list-tools exchanges, denied-permission cases, and state/CRUD effects with independent ground truth and cleanup. Treat all free-form arguments and payloads as potentially sensitive; never upload credentials, actual user conversations or content.
+
 ## Live test/code and next handoff
 
 - Public CDR #11 source-only four-platform receipt comparator `tools/compare_chatgpt_platform_receipts.py` previously passed source-negative controls at exact head `c608cd526a5edf937301903baf75f1c645c95897`, [run 42315746474](https://github.com/SemperSupra/connected-device-recovery/actions/runs/42315746474). It captures package/signer/ABI/version but not file hash/component equality.
