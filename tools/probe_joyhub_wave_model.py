@@ -55,7 +55,7 @@ def main():
     except urllib.error.HTTPError as e:
         raw=e.read(); status=e.code; ct=e.headers.get("Content-Type")
     except Exception as e:
-        print(json.dumps({"schema":"cdr-joyhub-wave-model-probe/v1","classification":"TRANSPORT_FAILURE","error_type":type(e).__name__,"error":str(e)[:300]},indent=2,sort_keys=True));return 0
+        print(json.dumps({"schema":"cdr-joyhub-wave-model-probe/v1","classification":"TRANSPORT_FAILURE","error_type":type(e).__name__,"error":str(e)[:300]},indent=2,sort_keys=True));return 2
     try: parsed=json.loads(raw.decode())
     except Exception: parsed=None
     code=parsed.get("code") if isinstance(parsed,dict) else None
