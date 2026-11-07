@@ -144,5 +144,42 @@ class CodexMcpOracleTests(unittest.TestCase):
         self.assertFalse(r["event_order_qualified"])
         self.assertFalse(r["synthetic_mutation_readback_with_cleanup"])
 
+    def test_disabled_installed_app_cannot_be_called(self):
+        events=full()
+        events[1]["enabled"]=False
+        r=evaluate(env(events))
+        self.assertFalse(r["installed_enabled_observed"])
+        self.assertFalse(r["effective_callability_contract"])
+        self.assertFalse(r["synthetic_mutation_readback_with_cleanup"])
+
+    def test_mcp_catalog_requires_same_connected_epoch(self):
+        for case in ("failed_at_catalog","lost_connection_after_catalog"):
+            with self.subTest(case=case):
+                events=full()
+                if case=="failed_at_catalog":
+                    events.insert(7,e("mcp_state",state="Failed"))
+                    events.insert(9,e("mcp_state",state="Connected"))
+                else:
+                    events.insert(8,e("mcp_state",state="Failed"))
+                    events.insert(9,e("mcp_state",state="Connected"))
+                r=evaluate(env(events))
+                self.assertFalse(r["mcp_catalog_observed"])
+                self.assertFalse(r["synthetic_mutation_readback_with_cleanup"])
+
+    def test_late_mcp_init_failure_cannot_reuse_earlier_success(self):
+        events=full()
+        events.insert(9,e("mcp_initialized",success=False))
+        r=evaluate(env(events))
+        self.assertFalse(r["mcp_connected_and_initialized_observed"])
+        self.assertFalse(r["synthetic_mutation_readback_with_cleanup"])
+
+    def test_failed_thread_or_late_session_config_is_not_valid_invocation(self):
+        for index,key in ((3,"ok"),(8,"arrived")):
+            with self.subTest(index=index):
+                events=full()
+                events[index][key]=False
+                r=evaluate(env(events))
+                self.assertFalse(r["synthetic_mutation_readback_with_cleanup"])
+
 if __name__=="__main__":
     unittest.main()

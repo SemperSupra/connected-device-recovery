@@ -93,13 +93,17 @@ def evaluate(document: dict) -> dict:
     n_calls=sum(event["kind"]=="tool_call" for event in events)
     n_readbacks=sum(event["kind"]=="state_readback" for event in events)
     n_cleanups=sum(event["kind"]=="cleanup" for event in events)
+    n_catalogs=sum(event["kind"]=="mcp_catalog" for event in events)
     call_limit=first.get("tool_call",len(events))
 
-    def before_call(kind):
-        for event in reversed(events[:call_limit]):
+    def before_index(kind,limit):
+        for event in reversed(events[:limit]):
             if event["kind"]==kind:
                 return event
         return {}
+
+    def before_call(kind):
+        return before_index(kind,call_limit)
 
     b=before_call("bundle")
     ins=before_call("installed")
@@ -107,18 +111,23 @@ def evaluate(document: dict) -> dict:
     mcp=before_call("mcp_state")
     catalog=before_call("mcp_catalog")
     call=last.get("tool_call",{}) if n_calls==1 else {}
-    initialized=any(idx<call_limit and event["kind"]=="mcp_initialized"
-                    and event["success"] is True for idx,event in enumerate(events))
-    connected_at=next((idx for idx,event in enumerate(events[:call_limit])
-                       if event["kind"]=="mcp_state" and event["state"]=="Connected"),None)
+    initialized=before_call("mcp_initialized").get("success") is True
+    catalog_at=first.get("mcp_catalog",call_limit)
+    mcp_at_catalog=before_index("mcp_state",catalog_at)
+    init_at_catalog=before_index("mcp_initialized",catalog_at)
+    connected_epoch_intact=all(
+        event["state"]=="Connected"
+        for event in events[catalog_at+1:call_limit]
+        if event["kind"]=="mcp_state")
 
     event_order_qualified = (
-        n_calls<=1 and n_readbacks<=1 and n_cleanups<=1
+        n_calls<=1 and n_readbacks<=1 and n_cleanups<=1 and n_catalogs<=1
         and ("session_configured" not in first or ordered("thread_start","session_configured"))
         and ("mcp_catalog" not in first or (
-            connected_at is not None
+            mcp_at_catalog.get("state")=="Connected"
+            and init_at_catalog.get("success") is True
             and ordered("mcp_initialized","mcp_catalog")
-            and first["mcp_initialized"] < connected_at < first["mcp_catalog"]))
+            and connected_epoch_intact))
         and ("tool_call" not in first or all(
             ordered(kind,"tool_call") for kind in (
                 "bundle","installed","permission","thread_start",
@@ -135,8 +144,10 @@ def evaluate(document: dict) -> dict:
     connected=mcp.get("state")=="Connected" and initialized and event_order_qualified
     cataloged=(connected and catalog.get("error") is False
                and type(catalog.get("tool_count")) is int)
-    callable_verified=cataloged and callable_ and authorized and catalog["tool_count"]>0
-    called=(callable_verified and call.get("ok") is True and event_order_qualified)
+    callable_verified=cataloged and enabled and callable_ and authorized and catalog["tool_count"]>0
+    called=(callable_verified and call.get("ok") is True and event_order_qualified
+            and before_call("thread_start").get("ok") is True
+            and before_call("session_configured").get("arrived") is True)
     observed_change=(called and call.get("mutating") is True
                      and all(state.get(k) is True for k in ("before","after","changed","independent"))
                      and cleanup.get("ok") is True and event_order_qualified)
