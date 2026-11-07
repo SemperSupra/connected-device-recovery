@@ -143,10 +143,15 @@ jobs:
                 ;;
             esac
 
+            # ASAR is architecture-neutral container metadata. An x64-only
+            # extraction gate undercounts ARM64 by ~20K files and falsely
+            # suggests a capability absence in cross-platform comparisons.
             asar="$(find "$root" -type f -name 'app.asar' -print -quit || true)"
-            if [ -n "$asar" ] && [ "$arch" = "amd64" -o "$arch" = "x86_64" ]; then
+            if [ -n "$asar" ]; then
               asar_out="$root/__app_asar_extracted"
               npx --yes @electron/asar@4.3.1 extract "$asar" "$asar_out"
+              test -d "$asar_out" || { echo "::error::ASAR extraction did not create output"; exit 26; }
+              test -n "$(find "$asar_out" -type f -print -quit)" || { echo "::error::ASAR extraction was empty"; exit 27; }
             fi
 
             census="out/chatgpt-linux/components/${pkg:-chatgpt}-${arch:-unknown}-${kind}"
