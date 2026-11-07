@@ -9,6 +9,8 @@ on:
       - '.github/workflows/chatgpt-macos-oracle.yml'
       - 'tools/characterize_desktop_bundle.py'
       - 'tests/test_characterize_desktop_noexec.py'
+      - 'tools/select_static_macho_codex.py'
+      - 'tests/test_select_static_macho_codex.py'
   workflow_dispatch:
 
 permissions:
@@ -33,6 +35,8 @@ jobs:
           set -euo pipefail
           python3 -m py_compile tools/characterize_desktop_bundle.py
           python3 -m unittest -v tests.test_characterize_desktop_noexec
+          python3 -m py_compile tools/select_static_macho_codex.py tests/test_select_static_macho_codex.py
+          python3 -m unittest -v tests.test_select_static_macho_codex
           python3 - <<'PY'
           import gzip, json, pathlib, subprocess, sys, tempfile
           with tempfile.TemporaryDirectory() as temp:
@@ -175,7 +179,9 @@ jobs:
               python3 tools/characterize_desktop_bundle.py "$asar_out" "$census/asar" --label "macos-asar-$index" --platform macos
             fi
 
-            bundled_codex="$(find "$app/Contents/Resources" -type f \( -name codex -o -name codex-cli \) -print -quit || true)"
+            # Native binary may coexist with a same-name 328-byte shell
+            # wrapper; select by bounded Mach-O headers, never by find-first.
+            bundled_codex="$(python3 tools/select_static_macho_codex.py "$app/Contents/Resources" --receipt "$census/codex-selection.json")"
             if [ -n "$bundled_codex" ]; then
               # Do not execute original donor binaries in this static-only lane.
               arch_desc="$(file "$bundled_codex" || true)"
