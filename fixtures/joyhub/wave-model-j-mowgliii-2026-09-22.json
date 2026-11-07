@@ -1,0 +1,42 @@
+{
+  "schema": "cdr-joyhub-wave-model-evidence/v1",
+  "date": "2026-09-22",
+  "source": {
+    "app": "JOYHUB Android 2.14.2 / v299",
+    "endpoint": "api/video/getRecommendModel",
+    "base": "https://appapi.joyhub.net/",
+    "product_id_source": "qualified live catalog J-MowgliII",
+    "product_id": "320"
+  },
+  "request": {
+    "method": "POST",
+    "body": {
+      "product_id": "320"
+    },
+    "authorization_value": "empty",
+    "jh_user_id_value": "empty",
+    "cookie_sent": false,
+    "account_identifier_sent": false,
+    "request_count": 1
+  },
+  "run": {
+    "run_id": 35752098899,
+    "http_status": 200,
+    "app_code": 9000,
+    "app_status": "warning",
+    "message": "System error[9000]",
+    "classification": "APPLICATION_BOUNDARY",
+    "response_bytes": 102,
+    "sha256": "ec6ea2af4b7026b10b408277c248a2b0e3480f217a988f406dd5d54ff9b40cd0"
+  },
+  "interpretation": [
+    "The server-issued J-MowgliII product ID does not yield anonymous recommendation-wave content in logged-out state.",
+    "The endpoint is reachable but stops at an application/state boundary.",
+    "Do not repeat anonymously without runtime evidence of a materially different app state."
+  ],
+  "policy": {
+    "raw_payload_published": false,
+    "server_ids_guessed": false,
+    "state_mutation_intended": false
+  }
+}
