@@ -105,5 +105,44 @@ class CodexMcpOracleTests(unittest.TestCase):
         self.assertIn("rust-v0.167.0",s)
         self.assertNotIn("http_origin",s)
 
+    def test_temporal_cleanup_must_follow_independent_readback(self):
+        events=full()
+        events[-2],events[-1]=events[-1],events[-2]
+        r=evaluate(env(events))
+        self.assertFalse(r["event_order_qualified"])
+        self.assertFalse(r["synthetic_mutation_readback_with_cleanup"])
+
+    def test_late_permission_cannot_authorize_earlier_invocation(self):
+        events=full()
+        permission=events.pop(2)
+        events.insert(-1,permission)
+        r=evaluate(env(events))
+        self.assertFalse(r["effective_callability_contract"])
+        self.assertFalse(r["synthetic_mutation_readback_with_cleanup"])
+
+    def test_late_permission_grant_cannot_override_pre_call_deny(self):
+        events=full()
+        events[2]["app"]="deny"
+        events.insert(-1,e("permission",app="allow",origin="allow",
+                           downloads="deny",uploads="deny",full_cdp_access="deny"))
+        r=evaluate(env(events))
+        self.assertFalse(r["effective_callability_contract"])
+        self.assertFalse(r["synthetic_mutation_readback_with_cleanup"])
+
+    def test_late_connected_notification_cannot_backdate_mcp_catalog(self):
+        events=full()
+        connected=events.pop(6)
+        events.insert(-1,connected)
+        r=evaluate(env(events))
+        self.assertFalse(r["mcp_catalog_observed"])
+        self.assertFalse(r["synthetic_mutation_readback_with_cleanup"])
+
+    def test_duplicated_action_epoch_is_not_a_single_mutation_witness(self):
+        events=full()
+        events.insert(10,e("tool_call",ok=True,mutating=True))
+        r=evaluate(env(events))
+        self.assertFalse(r["event_order_qualified"])
+        self.assertFalse(r["synthetic_mutation_readback_with_cleanup"])
+
 if __name__=="__main__":
     unittest.main()

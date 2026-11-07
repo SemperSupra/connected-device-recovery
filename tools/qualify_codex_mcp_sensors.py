@@ -84,22 +84,48 @@ def evaluate(document: dict) -> dict:
         if kind not in first:
             first[kind]=idx
         last[kind]=event
-    # Missing or inverted observational order cannot be promoted.
+    # One source-known synthetic action per receipt. Preserve the time at
+    # which authority and MCP state were actually observed; a later allow or
+    # Connected notification cannot authorize an earlier invocation.
     def ordered(earlier,later):
         return earlier in first and later in first and first[earlier]<first[later]
+
+    n_calls=sum(event["kind"]=="tool_call" for event in events)
+    n_readbacks=sum(event["kind"]=="state_readback" for event in events)
+    n_cleanups=sum(event["kind"]=="cleanup" for event in events)
+    call_limit=first.get("tool_call",len(events))
+
+    def before_call(kind):
+        for event in reversed(events[:call_limit]):
+            if event["kind"]==kind:
+                return event
+        return {}
+
+    b=before_call("bundle")
+    ins=before_call("installed")
+    perm=before_call("permission")
+    mcp=before_call("mcp_state")
+    catalog=before_call("mcp_catalog")
+    call=last.get("tool_call",{}) if n_calls==1 else {}
+    initialized=any(idx<call_limit and event["kind"]=="mcp_initialized"
+                    and event["success"] is True for idx,event in enumerate(events))
+    connected_at=next((idx for idx,event in enumerate(events[:call_limit])
+                       if event["kind"]=="mcp_state" and event["state"]=="Connected"),None)
+
     event_order_qualified = (
-        ("session_configured" not in first or ordered("thread_start","session_configured"))
-        and ("mcp_catalog" not in first or ordered("mcp_initialized","mcp_catalog"))
-        and ("tool_call" not in first or ordered("mcp_catalog","tool_call"))
+        n_calls<=1 and n_readbacks<=1 and n_cleanups<=1
+        and ("session_configured" not in first or ordered("thread_start","session_configured"))
+        and ("mcp_catalog" not in first or (
+            connected_at is not None
+            and ordered("mcp_initialized","mcp_catalog")
+            and first["mcp_initialized"] < connected_at < first["mcp_catalog"]))
+        and ("tool_call" not in first or all(
+            ordered(kind,"tool_call") for kind in (
+                "bundle","installed","permission","thread_start",
+                "session_configured","mcp_catalog")))
         and ("state_readback" not in first or ordered("tool_call","state_readback"))
+        and ("cleanup" not in first or ordered("state_readback","cleanup"))
     )
-    b=last.get("bundle",{})
-    ins=last.get("installed",{})
-    perm=last.get("permission",{})
-    mcp=last.get("mcp_state",{})
-    initialized=last.get("mcp_initialized",{}).get("success") is True
-    catalog=last.get("mcp_catalog",{})
-    call=last.get("tool_call",{})
     state=last.get("state_readback",{})
     cleanup=last.get("cleanup",{})
     declared=b.get("present") is True
