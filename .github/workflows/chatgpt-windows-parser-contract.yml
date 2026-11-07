@@ -11,6 +11,8 @@ on:
       - 'tests/test_select_windows_donor_acquisition.py'
       - 'tools/compare_chatgpt_platform_receipts.py'
       - 'tests/test_compare_chatgpt_platform_receipts.py'
+      - 'tools/compare_desktop_plugin_manifests.py'
+      - 'tests/test_compare_desktop_plugin_manifests.py'
   workflow_dispatch:
 
 permissions:
@@ -39,6 +41,8 @@ jobs:
           python3 -m unittest -v tests.test_select_windows_donor_acquisition
           python3 -m py_compile tools/compare_chatgpt_platform_receipts.py tests/test_compare_chatgpt_platform_receipts.py
           python3 -m unittest -v tests.test_compare_chatgpt_platform_receipts
+          python3 -m py_compile tools/compare_desktop_plugin_manifests.py tests/test_compare_desktop_plugin_manifests.py
+          python3 -m unittest -v tests.test_compare_desktop_plugin_manifests
       - name: Confirm strictly synthetic contract classification
         shell: bash
         run: |
