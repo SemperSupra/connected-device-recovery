@@ -4,17 +4,32 @@ on:
   pull_request:
     paths:
       - '.github/workflows/chatgpt-webui-oracle.yml'
+      - 'tools/chatgpt_webui_guest_safety.py'
+      - 'tests/test_chatgpt_webui_guest_safety.py'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   guest-and-static:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 / Node24
+        with:
+          persist-credentials: false
+
+      - name: Qualify guest sensor source-only host, privacy and budget contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/chatgpt_webui_guest_safety.py
+          python3 -m unittest -v tests.test_chatgpt_webui_guest_safety
 
       - name: Probe unauthenticated API and product surfaces
         shell: bash
@@ -23,6 +38,7 @@ jobs:
           mkdir -p out/chatgpt-webui
           python3 - <<'PY'
           import hashlib,json,urllib.error,urllib.parse,urllib.request,pathlib
+          from tools.chatgpt_webui_guest_safety import error_kind
 
           probes=[
             {"id":"oidc-discovery","method":"GET","url":"https://auth.openai.com/.well-known/openid-configuration","plane":"public-auth-metadata"},
@@ -74,7 +90,7 @@ jobs:
               try: body=e.read(2_000_000)
               except Exception: body=b""
             except Exception as e:
-              error=f"{type(e).__name__}: {e}"
+              error=error_kind(e)
 
             ctype=next((v for k,v in hdrs.items() if k.lower()=="content-type"),"")
             body_shape=None
@@ -113,6 +129,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import hashlib,json,re,urllib.parse,urllib.request,pathlib
+          from tools.chatgpt_webui_guest_safety import allowed_asset_url, error_kind, MAX_ASSETS, MAX_ASSET_BYTES
           root="https://chatgpt.com/"
           req=urllib.request.Request(root,headers={"User-Agent":"Mozilla/5.0 SemperSupra-CDR/1.0"})
           try:
@@ -122,7 +139,7 @@ jobs:
               ctype=r.headers.get("content-type")
           except Exception as e:
             pathlib.Path("out/chatgpt-webui/static-census.json").write_text(json.dumps({
-              "schema":"cdr-chatgpt-webui-static/v1","status":"TYPED_UNAVAILABLE","error":f"{type(e).__name__}: {e}"
+              "schema":"cdr-chatgpt-webui-static/v1","status":"TYPED_UNAVAILABLE","error":error_kind(e)
             },indent=2)+"\n")
             raise SystemExit(0)
 
@@ -132,18 +149,24 @@ jobs:
           for x in raw_links:
             u=urllib.parse.urljoin(final,x)
             p=urllib.parse.urlsplit(u)
-            if p.scheme in {"http","https"} and p.netloc.endswith(("chatgpt.com","oaistatic.com")):
+            if allowed_asset_url(u):
               links.append(urllib.parse.urlunsplit((p.scheme,p.netloc,p.path,"","")))
 
           assets=[]
           terms=["voice","codex","work","project","memory","plugin","connector","image","file","canvas","task","browser","computer","realtime","websocket","sse"]
-          for u in sorted(set(links))[:120]:
+          for u in sorted(set(links))[:MAX_ASSETS]:
             rec={"url":u}
             try:
               rq=urllib.request.Request(u,headers={"User-Agent":"Mozilla/5.0 SemperSupra-CDR/1.0"})
               with urllib.request.urlopen(rq,timeout=15) as r:
-                body=r.read(5_000_000)
-                rec.update({"status":r.status,"bytes":len(body),"sha256":hashlib.sha256(body).hexdigest(),"content_type":r.headers.get("content-type")})
+                sample=r.read(MAX_ASSET_BYTES+1)
+                truncated=len(sample)>MAX_ASSET_BYTES
+                body=sample[:MAX_ASSET_BYTES]
+                rec.update({"status":r.status,"sampled_bytes":len(body),
+                            "prefix_sha256":hashlib.sha256(body).hexdigest(),
+                            "hash_scope":"bounded_prefix",
+                            "content_complete":not truncated,
+                            "content_type":r.headers.get("content-type")})
                 low=body.decode("utf-8","ignore").lower()
                 rec["capability_terms"]=[t for t in terms if t in low]
             except Exception as e:
@@ -154,14 +177,16 @@ jobs:
             "schema":"cdr-chatgpt-webui-static/v1",
             "status":"PASS","final_url":urllib.parse.urlunsplit((*urllib.parse.urlsplit(final)[:3],"","")),
             "html_bytes":len(html),"html_sha256":hashlib.sha256(html).hexdigest(),
-            "content_type":ctype,"asset_count_seen":len(set(links)),"assets":assets,
+            "content_type":ctype,"asset_count_seen":len(set(links)),
+            "asset_count_sampled":len(assets),"max_assets":MAX_ASSETS,
+            "max_asset_sample_bytes":MAX_ASSET_BYTES,"assets":assets,
             "source_bundles_published":False,
             "claim_boundary":"Hashes, sizes and bounded term presence only; no proprietary JS/CSS source is published."
           },indent=2,sort_keys=True)+"\n")
           PY
 
       - name: Upload public-safe WebUI evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6 / Node24
         with:
           name: chatgpt-webui-derived-oracle
           path: out/chatgpt-webui/
