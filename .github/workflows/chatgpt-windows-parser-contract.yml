@@ -1,0 +1,57 @@
+name: Qualify Windows MSIX static parser (no donor download)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/chatgpt-windows-parser-contract.yml'
+      - 'tools/characterize_windows_msix.py'
+      - 'tests/test_characterize_windows_msix.py'
+      - 'tools/select_windows_donor_acquisition.py'
+      - 'tests/test_select_windows_donor_acquisition.py'
+      - 'tools/compare_chatgpt_platform_receipts.py'
+      - 'tests/test_compare_chatgpt_platform_receipts.py'
+      - 'tools/compare_desktop_plugin_manifests.py'
+      - 'tests/test_compare_desktop_plugin_manifests.py'
+      - 'tools/qualify_codex_mcp_sensors.py'
+      - 'tests/test_qualify_codex_mcp_sensors.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  source-only:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 / Node24
+        with:
+          persist-credentials: false
+      - name: Compile and exercise source-owned MSIX parser fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/characterize_windows_msix.py tests/test_characterize_windows_msix.py
+          python3 -m unittest -v tests.test_characterize_windows_msix
+          python3 -m py_compile tools/select_windows_donor_acquisition.py tests/test_select_windows_donor_acquisition.py
+          python3 -m unittest -v tests.test_select_windows_donor_acquisition
+          python3 -m py_compile tools/compare_chatgpt_platform_receipts.py tests/test_compare_chatgpt_platform_receipts.py
+          python3 -m unittest -v tests.test_compare_chatgpt_platform_receipts
+          python3 -m py_compile tools/compare_desktop_plugin_manifests.py tests/test_compare_desktop_plugin_manifests.py
+          python3 -m unittest -v tests.test_compare_desktop_plugin_manifests
+          python3 -m py_compile tools/qualify_codex_mcp_sensors.py tests/test_qualify_codex_mcp_sensors.py
+          python3 -m unittest -v tests.test_qualify_codex_mcp_sensors
+      - name: Confirm strictly synthetic contract classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e ChatGPT.msix
+          test ! -d out/chatgpt-windows-x64
+          test ! -d out/chatgpt-windows-arm64
+          echo 'SOURCE_ONLY_SYNTHETIC_MSIX_PARSER_PASS; no original download, signature, GUI or IPC qualification'

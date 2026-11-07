@@ -1,0 +1,250 @@
+name: Characterize official ChatGPT Windows packages
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/chatgpt-windows-oracle.yml'
+      - 'tools/characterize_asar_header.cjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Avoid duplicate large (~900MB per arch) acquisitions on obsolete PR heads.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  admit:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      acquire: ${{ steps.select.outputs.acquire }}
+      reason: ${{ steps.select.outputs.reason }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 / Node24
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Fail-conservative incremental donor acquisition admission
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/select_windows_donor_acquisition.py
+          python3 -m unittest -v tests.test_select_windows_donor_acquisition
+          python3 tools/select_windows_donor_acquisition.py
+
+  characterize:
+    needs: admit
+    # A skipped donor job is NOT package/runtime qualification; the source-only
+    # contract workflow remains the separate exact-head code check.
+    if: needs.admit.outputs.acquire == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            url: https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix
+          - arch: arm64
+            url: https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix
+
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      STORE_ID: 9PLM9XGG6VKS
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 / Node 24
+        with:
+          persist-credentials: false
+
+      - name: Validate bounded ASAR header parser on source-known fixtures
+        shell: pwsh
+        run: node tools/characterize_asar_header.cjs --self-test
+
+      - name: Acquire current Store-signed MSIX directly from OpenAI
+        id: acquire
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = '${{ matrix.arch }}'
+          $url = '${{ matrix.url }}'
+          $out = Join-Path $PWD "out/chatgpt-windows-$arch"
+          $work = Join-Path $env:RUNNER_TEMP "chatgpt-windows-$arch"
+          $msix = Join-Path $work 'ChatGPT.msix'
+          $extract = Join-Path $work 'extract'
+          New-Item -ItemType Directory -Force -Path $out,$extract | Out-Null
+
+          Invoke-WebRequest -Uri $url -OutFile $msix
+          $sha = (Get-FileHash -Algorithm SHA256 -Path $msix).Hash.ToLowerInvariant()
+          $size = (Get-Item $msix).Length
+          $sig = Get-AuthenticodeSignature -FilePath $msix
+          # A recorded signature is not a trust gate. Refuse invalid/unsigned
+          # packages before reading their archive contents.
+          if ([string]$sig.Status -ne 'Valid' -or -not $sig.SignerCertificate) {
+            throw "MSIX Authenticode signature is not Valid or has no signer certificate."
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($msix, $extract)
+
+          $manifestPath = Join-Path $extract 'AppxManifest.xml'
+          if (!(Test-Path $manifestPath)) { throw 'AppxManifest.xml missing from official MSIX.' }
+          [xml]$manifest = Get-Content $manifestPath -Raw
+
+          $identity = $manifest.SelectSingleNode("//*[local-name()='Identity']")
+          if (-not $identity) { throw 'Package Identity missing from AppxManifest.xml.' }
+          if ([string]$identity.Publisher -ne [string]$sig.SignerCertificate.Subject) {
+            throw "MSIX manifest publisher does not match the verified signer certificate."
+          }
+          if ([string]$identity.ProcessorArchitecture -ne $arch) {
+            throw "MSIX manifest architecture does not match the requested architecture."
+          }
+
+          $caps = @($manifest.SelectNodes("//*[local-name()='Capability'] | //*[local-name()='DeviceCapability'] | //*[local-name()='CustomCapability']") |
+            ForEach-Object { [string]$_.Name } | Where-Object { $_ } | Sort-Object -Unique)
+          $protocols = @($manifest.SelectNodes("//*[local-name()='Protocol']") |
+            ForEach-Object { [string]$_.Name } | Where-Object { $_ } | Sort-Object -Unique)
+          $aliases = @($manifest.SelectNodes("//*[local-name()='ExecutionAlias']") |
+            ForEach-Object { [string]$_.Alias } | Where-Object { $_ } | Sort-Object -Unique)
+          $deps = @($manifest.SelectNodes("//*[local-name()='PackageDependency']") |
+            ForEach-Object { [string]$_.Name } | Where-Object { $_ } | Sort-Object -Unique)
+
+          $files = @(Get-ChildItem $extract -Recurse -File)
+          $extensionCounts = @{}
+          foreach ($file in $files) {
+            $ext = if ($file.Extension) { $file.Extension.ToLowerInvariant() } else { '<none>' }
+            if (-not $extensionCounts.ContainsKey($ext)) { $extensionCounts[$ext] = 0 }
+            $extensionCounts[$ext]++
+          }
+
+          $interesting = @($files |
+            Where-Object {
+              $_.Extension -match '^\.(exe|dll|node|pak|wasm|js|asar|json|toml|yaml|yml|ps1|cmd|bat)$' -or
+              $_.Name -match '(?i)(codex|chatgpt|browser|playwright|cua|computer|plugin|skill|mcp|sandbox|remote|hid|pty)'
+            } |
+            ForEach-Object { $_.FullName.Substring($extract.Length + 1).Replace('\','/') } |
+            Sort-Object -Unique |
+            Select-Object -First 2000)
+
+          $executables = @()
+          foreach ($file in $files | Where-Object { $_.Extension -match '^\.(exe|dll|node)$' } | Select-Object -First 600) {
+            $rel = $file.FullName.Substring($extract.Length + 1).Replace('\','/')
+            $record = [ordered]@{
+              path = $rel
+              size_bytes = $file.Length
+              sha256 = (Get-FileHash -Algorithm SHA256 -Path $file.FullName).Hash.ToLowerInvariant()
+            }
+            try {
+              $fsig = Get-AuthenticodeSignature -FilePath $file.FullName
+              $record.signature_status = [string]$fsig.Status
+              $record.signer_subject = if ($fsig.SignerCertificate) { $fsig.SignerCertificate.Subject } else { $null }
+            } catch {
+              $record.signature_status = 'ERROR'
+            }
+            $executables += $record
+          }
+
+          # Observe ASAR index semantics, never copy the header or file bodies.
+          # The on-runner parser emits counts, a header digest and bounded shape only.
+          $asarFiles = @($files | Where-Object { $_.Extension -ieq '.asar' })
+          if ($asarFiles.Count -eq 0) { throw 'Expected ASAR container is missing from this build.' }
+          if ($asarFiles.Count -gt 4) { throw 'ASAR source count exceeds bounded qualification.' }
+          $asarInventory = @()
+          foreach ($asar in $asarFiles) {
+            $asarLine = & node tools/characterize_asar_header.cjs $asar.FullName
+            if ($LASTEXITCODE -ne 0) { throw 'ASAR header/index qualification failed.' }
+            $asarInventory += ($asarLine | ConvertFrom-Json)
+          }
+
+          $blockMapPath = Join-Path $extract 'AppxBlockMap.xml'
+          $derived = [ordered]@{
+            schema = 'cdr-chatgpt-windows-derived-package/v2'
+            evidence_date = ([DateTime]::UtcNow).ToString('yyyy-MM-dd')
+            source_url = $url
+            store_id = $env:STORE_ID
+            requested_architecture = $arch
+            package = [ordered]@{
+              sha256 = $sha
+              size_bytes = $size
+              signature_status = [string]$sig.Status
+              signer_subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { $null }
+              signer_thumbprint = if ($sig.SignerCertificate) { $sig.SignerCertificate.Thumbprint } else { $null }
+            }
+            identity = [ordered]@{
+              name = [string]$identity.Name
+              publisher = [string]$identity.Publisher
+              version = [string]$identity.Version
+              processor_architecture = [string]$identity.ProcessorArchitecture
+              resource_id = [string]$identity.ResourceId
+            }
+            capabilities = $caps
+            protocols = $protocols
+            execution_aliases = $aliases
+            dependencies = $deps
+            file_count = $files.Count
+            extension_counts = $extensionCounts
+            interesting_paths = $interesting
+            executable_inventory = $executables
+            asar_header_inventory = $asarInventory
+            manifest_sha256 = (Get-FileHash -Algorithm SHA256 -Path $manifestPath).Hash.ToLowerInvariant()
+            block_map_sha256 = if (Test-Path $blockMapPath) { (Get-FileHash -Algorithm SHA256 -Path $blockMapPath).Hash.ToLowerInvariant() } else { $null }
+            proprietary_bytes_published = $false
+            claim_boundary = 'Derived package metadata only. MSIX and extracted proprietary payloads remain transient and are not uploaded.'
+          }
+
+          $derived | ConvertTo-Json -Depth 20 | Set-Content -Encoding UTF8 (Join-Path $out 'derived-package.json')
+          Remove-Item -Force -Recurse $work -ErrorAction SilentlyContinue
+
+      - name: Preserve typed failure receipt and clean transient donor bytes
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = '${{ matrix.arch }}'
+          $out = Join-Path $PWD "out/chatgpt-windows-$arch"
+          $work = Join-Path $env:RUNNER_TEMP "chatgpt-windows-$arch"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $status = [ordered]@{
+            schema = 'cdr-chatgpt-windows-workcell/v1'
+            architecture = $arch
+            # pull_request GITHUB_SHA is the synthetic merge commit, not
+            # the donor-workflow source head. Preserve both identities.
+            source_head = '${{ github.event.pull_request.head.sha || github.sha }}'
+            workflow_checkout_sha = $env:GITHUB_SHA
+            workflow_run_id = $env:GITHUB_RUN_ID
+            workflow_run_attempt = $env:GITHUB_RUN_ATTEMPT
+            acquisition_outcome = '${{ steps.acquire.outcome }}'
+            qualified_original_runtime = $false
+            claim_boundary = 'This job produces derived static evidence only.'
+          }
+          $status | ConvertTo-Json -Depth 5 |
+            Set-Content -Encoding UTF8 (Join-Path $out 'workcell-status.json')
+          if (Test-Path -LiteralPath $work) {
+            Remove-Item -LiteralPath $work -Force -Recurse -ErrorAction Stop
+          }
+
+      - name: Prove proprietary package payload is absent
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $PWD 'out/chatgpt-windows-${{ matrix.arch }}'
+          $bad = @(Get-ChildItem $out -Recurse -File |
+            Where-Object { $_.Extension -match '^\.(msix|appx|msixbundle|appxbundle|exe|dll|node|asar)$' })
+          if ($bad.Count -ne 0) {
+            $bad | ForEach-Object { Write-Host $_.FullName }
+            throw 'Proprietary payload escaped into publish tree.'
+          }
+
+      - name: Upload sanitized Windows oracle evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6 / Node 24
+        with:
+          name: chatgpt-windows-${{ matrix.arch }}-derived-oracle
+          path: out/chatgpt-windows-${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 7
