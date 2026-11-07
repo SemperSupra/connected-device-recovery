@@ -5,7 +5,7 @@ import stat
 import tempfile
 import unittest
 
-from tools.chatgpt_guest_dom_sensor import observe, SafeDOMShape
+from tools.chatgpt_guest_dom_sensor import observe, SafeDOMShape, detect_interstitial
 
 
 class GuestDOMTests(unittest.TestCase):
@@ -24,6 +24,13 @@ class GuestDOMTests(unittest.TestCase):
         self.assertNotIn("secret",data)
         self.assertNotIn("private",data)
         self.assertNotIn("malicious",data)
+
+    def test_access_interstitial_classification_only_never_bypass(self):
+        for html in (b"<html><title>Just a moment...</title></html>",
+                     b"<script src='/cdn-cgi/challenge-platform/foo.js'>"):
+            with self.subTest(html=html):
+                self.assertTrue(detect_interstitial(html))
+        self.assertFalse(detect_interstitial(b"<html><main>Guest interface</main></html>"))
 
     def test_missing_browser_abstains(self):
         with tempfile.TemporaryDirectory() as td:

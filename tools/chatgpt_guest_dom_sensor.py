@@ -31,6 +31,15 @@ INPUTS = frozenset({"text","search","email","password","file","hidden",
                     "checkbox","radio","submit","button"})
 
 
+def detect_interstitial(sample: bytes) -> bool:
+    """Classify only explicit access-challenge signatures; never bypass."""
+    low = sample.lower()
+    return any(sig in low for sig in (
+        b"challenge-platform", b"cf_chl_", b"cf-turnstile",
+        b"just a moment",
+    ))
+
+
 class SafeDOMShape(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -118,8 +127,11 @@ def observe(browser: Path | None = None, seconds: int = BROWSER_TIMEOUT_SECONDS)
         sample=sample[:DOM_READ_CAP]
         parser=SafeDOMShape()
         parser.feed(sample.decode("utf-8","replace"))
+        challenge = detect_interstitial(sample)
         return {**receipt,
-                "status":"DOM_SHAPE_OBSERVED_NOT_AUTHENTICATED_APP",
+                "status":("ACCESS_INTERSTITIAL_SIGNATURE_OBSERVED" if challenge else
+                          "DOM_SHAPE_OBSERVED_NOT_AUTHENTICATED_APP"),
+                "access_interstitial_signature_observed":challenge,
                 "exit_code":code,
                 "dom_sample_bytes":len(sample),
                 "dom_sample_truncated":truncated,
